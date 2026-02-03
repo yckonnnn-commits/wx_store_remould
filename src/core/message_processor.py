@@ -41,13 +41,20 @@ class MessageProcessor(QObject):
         self._page_ready = False
         self._last_user_name = None
         self._last_messages_hash = None
+        self._last_chat_user = None  # 记录上次抓取的用户，避免重复抓取
 
         # 定时器
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_cycle)
+        
+        # DOM监听定时器 - 检测聊天页面
+        self._dom_watch_timer = QTimer(self)
+        self._dom_watch_timer.timeout.connect(self._check_chat_page)
+        self._dom_watch_timer.setInterval(2000)  # 每2秒检测一次
 
         # 连接浏览器信号
         self.browser.page_loaded.connect(self._on_page_loaded)
+        self.browser.url_changed.connect(self._on_url_changed)
 
         # 连接协调器信号
         self.coordinator.reply_prepared.connect(self._on_reply_prepared)
@@ -58,8 +65,69 @@ class MessageProcessor(QObject):
         self.status_changed.emit("ready" if success else "error")
         if success:
             self.log_message.emit("✅ 页面加载完成")
-        else:
-            self.log_message.emit("❌ 页面加载失败")
+            # 启动DOM监听
+            if not self._dom_watch_timer.isActive():
+                self._dom_watch_timer.start()
+    
+    def _on_url_changed(self, url: str):
+        """URL变化回调"""
+        self.log_message.emit(f"[调试] URL变化: {url}")
+    
+    def _check_chat_page(self):
+        """检测是否在聊天页面 - 通过DOM元素判断"""
+        if not self._page_ready:
+            return
+        
+        # 使用JS检测聊天页面的关键元素
+        script = r"""
+        (function() {
+            // 检测聊天页面的关键元素
+            var chatCustomerName = document.querySelector('.chat-customer-name');
+            var inputTextarea = document.getElementById('input-textarea');
+            var chatScrollView = document.getElementById('chat-scroll-view');
+            
+            if (chatCustomerName && inputTextarea && chatScrollView) {
+                var userName = (chatCustomerName.textContent || '').trim();
+                return JSON.stringify({
+                    isChatPage: true,
+                    userName: userName
+                });
+            }
+            
+            return JSON.stringify({
+                isChatPage: false,
+                userName: null
+            });
+        })()
+        """
+        
+        def on_result(success, result):
+            if not success:
+                return
+            
+            try:
+                if isinstance(result, str):
+                    data = json.loads(result)
+                else:
+                    data = result
+                
+                is_chat_page = data.get('isChatPage', False)
+                user_name = data.get('userName', '')
+                
+                # 如果在聊天页面且用户名不同（说明切换了用户）
+                if is_chat_page and user_name and user_name != self._last_chat_user:
+                    self._last_chat_user = user_name
+                    self.log_message.emit(f"🔍 检测到进入用户聊天: {user_name}")
+                    # 延迟1秒后抓取聊天记录
+                    QTimer.singleShot(1000, self._auto_grab_chat_history)
+            except Exception as e:
+                pass
+        
+        self.browser.run_javascript(script, on_result)
+    
+    def _auto_grab_chat_history(self):
+        """自动抓取聊天记录"""
+        self.grab_and_display_chat_history()
 
     def start(self, interval_ms: int = 4000):
         """启动消息处理"""
@@ -79,6 +147,7 @@ class MessageProcessor(QObject):
         """停止消息处理"""
         self._running = False
         self._poll_timer.stop()
+        self._dom_watch_timer.stop()
         self.status_changed.emit("stopped")
         self.log_message.emit("🛑 AI客服已停止")
 

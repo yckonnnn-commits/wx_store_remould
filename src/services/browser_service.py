@@ -18,6 +18,7 @@ class BrowserService(QObject):
     message_received = Signal(dict)     # 收到消息
     js_execution_result = Signal(str, object)  # JS执行结果 (id, result)
     error_occurred = Signal(str)        # 错误信号
+    url_changed = Signal(str)           # URL变化信号
 
     def __init__(self, web_view: QWebEngineView):
         super().__init__()
@@ -25,12 +26,21 @@ class BrowserService(QObject):
         self.page = web_view.page()
         self._page_ready = False
         self._pending_callbacks: dict = {}
+        self._last_url = ""
 
         # 配置浏览器设置
         self._setup_browser()
 
         # 连接信号
         self.page.loadFinished.connect(self._on_load_finished)
+        self.page.urlChanged.connect(self._on_url_changed)
+    
+    def _on_url_changed(self, url: QUrl):
+        """URL变化回调"""
+        url_str = url.toString()
+        if url_str != self._last_url:
+            self._last_url = url_str
+            self.url_changed.emit(url_str)
 
     def _setup_browser(self):
         """配置浏览器设置"""
