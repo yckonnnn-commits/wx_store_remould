@@ -237,7 +237,7 @@ class MessageProcessor(QObject):
         self.browser.grab_chat_data(on_data)
 
     def _generate_and_send_reply(self, user_name: str, user_message: str):
-        """生成并发送回复"""
+        """生成并发送回复 - 使用大模型"""
         # 获取或创建会话
         session = self.sessions.get_or_create_session(
             session_id=f"user_{hash(user_name)}",
@@ -247,32 +247,29 @@ class MessageProcessor(QObject):
         # 记录用户消息
         self.sessions.add_message(session.session_id, user_message, is_user=True)
 
-        # 硬编码默认回复
-        default_reply = "咱们家产品都是根据咱们脸型头围肤色和需求1v1定制的，不是网上千篇一律的假发，您到店买不买我们都提供1.免费试戴+发型设计，您可以留个☎️，我安排老师接待您。"
+        # === 硬编码回复（已注释） ===
+        # default_reply = "咱们家产品都是根据咱们脸型头围肤色和需求1v1定制的，不是网上千篇一律的假发，您到店买不买我们都提供1.免费试戴+发型设计，您可以留个☎️，我安排老师接待您。"
+        # self._send_reply(session.session_id, default_reply)
         
-        # 直接发送硬编码回复
-        self._send_reply(session.session_id, default_reply)
+        # === 使用大模型生成回复 ===
+        def on_reply(success, reply_text):
+            if success and reply_text:
+                self._send_reply(session.session_id, reply_text)
+            else:
+                self.log_message.emit(f"❌ 大模型生成回复失败")
+                self._poll_inflight = False
+
+        self.coordinator.coordinate_reply(session.session_id, user_message, on_reply)
 
     def _on_reply_prepared(self, session_id: str, reply_text: str):
         """回复准备就绪"""
         self._send_reply(session_id, reply_text)
 
     def _send_default_reply(self):
-        """发送硬编码的默认回复"""
-        default_reply = "咱们家产品都是根据咱们脸型头围肤色和需求1v1定制的，不是网上千篇一律的假发，您到店买不买我们都提供1.免费试戴+发型设计，您可以留个☎️，我安排老师接待您。"
-        
-        def on_sent(success, result):
-            self.log_message.emit(f"[调试] 发送结果: success={success}, result={result}")
-            if success:
-                self.log_message.emit(f"✅ 回复已发送: {default_reply[:50]}...")
-            else:
-                self.log_message.emit(f"❌ 发送失败: {result}")
-            
-            # 延迟重置状态
-            QTimer.singleShot(2000, self._reset_poll_state)
-        
-        self.log_message.emit(f"📤 正在发送默认回复...")
-        self.browser.send_message(default_reply, on_sent)
+        """自动抓取聊天记录并生成回复（进入未读消息时调用）"""
+        self.log_message.emit(f"📋 正在抓取聊天记录...")
+        # 自动抓取聊天记录并生成回复
+        self.grab_and_display_chat_history(auto_reply=True)
 
     def _send_reply(self, session_id: str, reply_text: str):
         """发送回复"""
@@ -297,8 +294,12 @@ class MessageProcessor(QObject):
         if not self._poll_inflight:
             self._poll_cycle()
 
-    def grab_and_display_chat_history(self):
-        """抓取并格式化显示完整聊天记录"""
+    def grab_and_display_chat_history(self, auto_reply=True):
+        """抓取并格式化显示完整聊天记录，可选自动回复
+        
+        Args:
+            auto_reply: 是否在抓取后自动生成并发送回复
+        """
         def on_data(success, result):
             if not success:
                 self.log_message.emit("❌ 抓取聊天记录失败")
@@ -313,6 +314,7 @@ class MessageProcessor(QObject):
                 
                 user_name = data.get("user_name", "未知用户")
                 messages = data.get("messages", [])
+                user_messages = data.get("user_messages", [])
                 debug = data.get("debug", [])
                 
                 # 输出调试信息
@@ -344,10 +346,66 @@ class MessageProcessor(QObject):
                 self.log_message.emit(f"✅ 共 {len(messages)} 条消息")
                 self.log_message.emit(f"{'='*50}\n")
                 
+                # 如果启用自动回复且有用户消息
+                if auto_reply and user_messages:
+                    # 提取最新的用户消息
+                    latest_user_msg = user_messages[-1].get("text", "")
+                    if latest_user_msg:
+                        self.log_message.emit(f"🤖 准备调用大模型生成回复...")
+                        self._generate_reply_from_history(user_name, messages, latest_user_msg)
+                
             except Exception as e:
                 self.log_message.emit(f"❌ 解析聊天记录错误: {e}")
         
         self.browser.grab_chat_data(on_data)
+    
+    def _generate_reply_from_history(self, user_name: str, chat_history: list, latest_message: str):
+        """根据聊天记录生成回复
+        
+        Args:
+            user_name: 用户名
+            chat_history: 完整聊天记录
+            latest_message: 最新用户消息
+        """
+        # 获取或创建会话
+        session = self.sessions.get_or_create_session(
+            session_id=f"user_{hash(user_name)}",
+            user_name=user_name
+        )
+        
+        # 构建对话历史（格式化为大模型可理解的格式）
+        conversation_history = []
+        for msg in chat_history[-10:]:  # 只取最近10条消息
+            text = msg.get("text", "")
+            is_user = msg.get("is_user", False)
+            
+            if is_user:
+                conversation_history.append({"role": "user", "content": text})
+            else:
+                conversation_history.append({"role": "assistant", "content": text})
+        
+        self.log_message.emit(f"📤 发送聊天记录给大模型（共{len(conversation_history)}条）...")
+        
+        # 调用大模型生成回复
+        def on_llm_reply(request_id: str, reply_text: str):
+            self.log_message.emit(f"✅ 大模型回复完成")
+            self.log_message.emit(f"💬 回复内容: {reply_text[:100]}...")
+            # 发送回复
+            self._send_reply(session.session_id, reply_text)
+        
+        def on_llm_error(request_id: str, error_msg: str):
+            self.log_message.emit(f"❌ 大模型调用失败: {error_msg}")
+        
+        # 连接LLM信号
+        self.llm.reply_ready.connect(on_llm_reply)
+        self.llm.error_occurred.connect(on_llm_error)
+        
+        # 生成回复（使用对话历史）
+        self.log_message.emit(f"⏳ 大模型处理中...")
+        request_id = self.llm.generate_reply(
+            user_message=latest_message,
+            conversation_history=conversation_history[:-1] if len(conversation_history) > 1 else None
+        )
 
     def test_grab(self, callback: Callable = None):
         """测试抓取功能"""

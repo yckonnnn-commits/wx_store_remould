@@ -5,6 +5,7 @@ LLM服务模块
 
 import json
 import os
+import ssl
 import urllib.request
 import urllib.error
 from typing import Optional, List, Dict
@@ -82,7 +83,12 @@ class LLMWorker(QThread):
             method='POST'
         )
 
-        with urllib.request.urlopen(req, timeout=60) as response:
+        # 创建SSL上下文，跳过证书验证
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        with urllib.request.urlopen(req, timeout=60, context=ssl_context) as response:
             data = json.loads(response.read().decode('utf-8'))
             return data['choices'][0]['message']['content']
 
@@ -113,7 +119,12 @@ class LLMWorker(QThread):
             method='POST'
         )
 
-        with urllib.request.urlopen(req, timeout=60) as response:
+        # 创建SSL上下文，跳过证书验证
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        with urllib.request.urlopen(req, timeout=60, context=ssl_context) as response:
             data = json.loads(response.read().decode('utf-8'))
             if 'candidates' in data and data['candidates']:
                 return data['candidates'][0]['content']['parts'][0]['text']
@@ -151,7 +162,12 @@ class LLMWorker(QThread):
             method='POST'
         )
 
-        with urllib.request.urlopen(req, timeout=60) as response:
+        # 创建SSL上下文，跳过证书验证
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        with urllib.request.urlopen(req, timeout=60, context=ssl_context) as response:
             data = json.loads(response.read().decode('utf-8'))
             return data['output']['text']
 
@@ -181,7 +197,12 @@ class LLMWorker(QThread):
             method='POST'
         )
 
-        with urllib.request.urlopen(req, timeout=60) as response:
+        # 创建SSL上下文，跳过证书验证
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        with urllib.request.urlopen(req, timeout=60, context=ssl_context) as response:
             data = json.loads(response.read().decode('utf-8'))
             return data['choices'][0]['message']['content']
 
@@ -211,7 +232,12 @@ class LLMWorker(QThread):
             method='POST'
         )
 
-        with urllib.request.urlopen(req, timeout=60) as response:
+        # 创建SSL上下文，跳过证书验证
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        with urllib.request.urlopen(req, timeout=60, context=ssl_context) as response:
             data = json.loads(response.read().decode('utf-8'))
             return data['choices'][0]['message']['content']
 

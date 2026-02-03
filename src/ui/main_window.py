@@ -151,9 +151,9 @@ class MainWindow(QWidget):
         self.left_panel.append_log("🔄 刷新页面...")
 
     def _on_grab_test(self):
-        """测试抓取 - 调用格式化显示方法"""
+        """测试抓取 - 调用格式化显示方法（不自动回复）"""
         self.left_panel.append_log("开始抓取聊天记录...")
-        self.message_processor.grab_and_display_chat_history()
+        self.message_processor.grab_and_display_chat_history(auto_reply=False)
 
     def _on_model_changed(self, model_name: str):
         """模型变更"""

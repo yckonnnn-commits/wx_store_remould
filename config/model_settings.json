@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated_at": "2026-02-03T17:02:05.142680",
-  "current_model": "ChatGPT",
+  "updated_at": "2026-02-03T17:19:53.891506",
+  "current_model": "阿里千问",
   "models": {
     "ChatGPT": {
       "base_url": "https://api.openai.com/v1",
@@ -15,7 +15,7 @@
     },
     "阿里千问": {
       "base_url": "https://dashscope.aliyuncs.com",
-      "api_key": "",
+      "api_key": "sk-7b7a85acf9ca47dd86b228eb7a73fad6",
       "model": "qwen-plus"
     },
     "DeepSeek": {

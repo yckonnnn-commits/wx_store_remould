@@ -93,7 +93,8 @@ class ConfigManager(QObject):
             if self.config_file and self.config_file.exists():
                 with open(self.config_file, 'r', encoding='utf-8') as f:
                     loaded = json.load(f)
-                    # 合并默认值和加载的配置
+                    # 先用默认配置作为基础，然后用加载的配置覆盖
+                    # 这样可以保留用户手动添加的 API Key
                     self._settings = self._deep_merge(self._default_settings.copy(), loaded)
             else:
                 self._settings = self._default_settings.copy()
@@ -108,6 +109,14 @@ class ConfigManager(QObject):
         try:
             if self.config_file:
                 self.config_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                # 先重新加载文件中的配置，避免覆盖用户手动添加的 API Key
+                if self.config_file.exists():
+                    with open(self.config_file, 'r', encoding='utf-8') as f:
+                        file_config = json.load(f)
+                        # 合并：保留文件中的 API Key，更新其他配置
+                        self._settings = self._merge_preserve_keys(file_config, self._settings, preserve_keys=['api_key'])
+                
                 self._settings["updated_at"] = datetime.now().isoformat()
                 with open(self.config_file, 'w', encoding='utf-8') as f:
                     json.dump(self._settings, f, ensure_ascii=False, indent=2)
@@ -115,6 +124,24 @@ class ConfigManager(QObject):
         except Exception as e:
             print(f"[ConfigManager] 保存配置失败: {e}")
             return False
+    
+    def _merge_preserve_keys(self, base: dict, override: dict, preserve_keys: list) -> dict:
+        """合并配置，保留 base 中指定 key 的非空值
+        
+        Args:
+            base: 基础配置（文件中的配置）
+            override: 覆盖配置（内存中的配置）
+            preserve_keys: 需要保留的 key 列表（如 'api_key'）
+        """
+        result = override.copy()
+        for key, value in base.items():
+            if isinstance(value, dict) and key in result and isinstance(result[key], dict):
+                # 递归合并字典
+                result[key] = self._merge_preserve_keys(value, result[key], preserve_keys)
+            elif key in preserve_keys and value:
+                # 如果是需要保留的 key 且 base 中有非空值，使用 base 的值
+                result[key] = value
+        return result
 
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置项"""
@@ -164,11 +191,15 @@ class ConfigManager(QObject):
         return list(self._settings.get("models", {}).keys())
 
     def _deep_merge(self, base: dict, override: dict) -> dict:
-        """深度合并两个字典"""
+        """深度合并两个字典，保留 override 中的非空值"""
         result = base.copy()
         for key, value in override.items():
             if key in result and isinstance(result[key], dict) and isinstance(value, dict):
                 result[key] = self._deep_merge(result[key], value)
             else:
-                result[key] = value
+                # 如果 override 中的值非空，使用 override 的值
+                # 如果 override 中的值为空字符串，但 base 中有值，保留 base 的值
+                if value or (not value and key not in result):
+                    result[key] = value
+                # 否则保留 base 中的值（result[key] 已经是 base 的值）
         return result
