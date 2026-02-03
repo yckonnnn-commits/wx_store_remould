@@ -688,7 +688,7 @@ class BrowserService(QObject):
         self.run_javascript(script, callback)
 
     def send_message(self, text: str, callback: Callable = None):
-        """发送消息
+        """发送消息 - 参考 hari_main.py 实现
 
         Args:
             text: 要发送的文本
@@ -710,15 +710,31 @@ class BrowserService(QObject):
             }}
 
             function findComposer() {{
+                // 微信小店输入框：直接使用 id="input-textarea"
+                var inputTextarea = document.getElementById('input-textarea');
+                if (inputTextarea && isVisible(inputTextarea)) return inputTextarea;
+
+                // 兜底：class="text-area"
+                var textAreaClass = document.querySelector('.text-area');
+                if (textAreaClass && isVisible(textAreaClass)) return textAreaClass;
+
+                // 参考 hari_main.py：优先查找 role=textbox
                 var roleBox = document.querySelector('[role="textbox"]');
                 if (roleBox && isVisible(roleBox)) return roleBox;
+
+                // textarea
                 var textareas = Array.from(document.querySelectorAll('textarea')).filter(isVisible);
                 if (textareas.length) return textareas[0];
+
+                // input
                 var inputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'))
                     .filter(function(el) {{ return isVisible(el) && !el.disabled && !el.readOnly; }});
                 if (inputs.length) return inputs[0];
+
+                // contenteditable
                 var ceList = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
                 if (ceList.length) return ceList[0];
+
                 return null;
             }}
 
@@ -726,14 +742,10 @@ class BrowserService(QObject):
                 if (!el) return false;
                 try {{
                     el.focus();
-                    if (el.isContentEditable) {{
-                        try {{
-                            document.execCommand('selectAll', false, null);
-                            document.execCommand('insertText', false, text);
-                        }} catch (e) {{
-                            el.innerText = text;
-                        }}
-                    }} else {{
+                    
+                    // 对于 textarea 元素，直接设置 value
+                    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {{
+                        // 使用原生 value setter 触发框架监听
                         var proto = Object.getPrototypeOf(el);
                         var desc = Object.getOwnPropertyDescriptor(proto, 'value');
                         if (desc && desc.set) {{
@@ -741,7 +753,19 @@ class BrowserService(QObject):
                         }} else {{
                             el.value = text;
                         }}
+                    }} else if (el.isContentEditable) {{
+                        // 参考 hari_main.py：更像用户输入
+                        try {{
+                            document.execCommand('selectAll', false, null);
+                            document.execCommand('insertText', false, text);
+                        }} catch (e) {{
+                            el.innerText = text;
+                        }}
+                    }} else {{
+                        el.value = text;
                     }}
+                    
+                    // 触发事件让框架感知变化
                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     return true;
@@ -750,9 +774,12 @@ class BrowserService(QObject):
                 }}
             }}
 
-            function dispatchEnter(target) {{
-                if (!target) return false;
+            function clickSend(composer) {{
+                // 参考 hari_main.py：微信小店只使用Enter发送
+                if (!composer) return false;
                 try {{
+                    composer.focus();
+                    // 只按一次Enter键
                     var enterEvent = new KeyboardEvent('keydown', {{
                         bubbles: true,
                         cancelable: true,
@@ -761,7 +788,7 @@ class BrowserService(QObject):
                         keyCode: 13,
                         which: 13
                     }});
-                    target.dispatchEvent(enterEvent);
+                    composer.dispatchEvent(enterEvent);
                     return true;
                 }} catch (e) {{
                     return false;
@@ -770,19 +797,24 @@ class BrowserService(QObject):
 
             var composer = findComposer();
             if (!composer) {{
-                return {{ success: false, error: '未找到输入框' }};
+                return JSON.stringify({{ success: false, error: '未找到输入框' }});
             }}
 
-            var success = setComposerValue(composer, {escaped_text});
-            if (!success) {{
-                return {{ success: false, error: '设置文本失败' }};
+            var setSuccess = setComposerValue(composer, {escaped_text});
+            if (!setSuccess) {{
+                return JSON.stringify({{ success: false, error: '设置文本失败' }});
             }}
 
+            // 等待文本设置完成后再发送
             setTimeout(function() {{
-                dispatchEnter(composer);
-            }}, 200);
+                clickSend(composer);
+            }}, 300);
 
-            return {{ success: true, composer_found: true }};
+            return JSON.stringify({{ 
+                success: true, 
+                composer_tag: composer.tagName,
+                composer_editable: composer.isContentEditable || false
+            }});
         }})()
         """
         if callback:

@@ -108,8 +108,8 @@ class MessageProcessor(QObject):
                 if result.get('found') and result.get('clicked'):
                     # 成功找到并点击了未读消息
                     self.log_message.emit(f"🔔 发现未读消息({result.get('badgeText')})，已自动点击进入")
-                    # 延迟后抓取消息
-                    QTimer.singleShot(1200, self._grab_messages)
+                    # 延迟后直接发送硬编码回复（不需要先抓取消息）
+                    QTimer.singleShot(1500, self._send_default_reply)
                 elif result.get('found') and not result.get('clicked'):
                     self.log_message.emit(f"⚠️ 发现未读消息但点击失败: {result.get('reason')}")
                     self._poll_inflight = False
@@ -178,18 +178,32 @@ class MessageProcessor(QObject):
         # 记录用户消息
         self.sessions.add_message(session.session_id, user_message, is_user=True)
 
-        # 生成回复
-        def on_reply(success, reply_text):
-            if success and reply_text:
-                self._send_reply(session.session_id, reply_text)
-            else:
-                self._poll_inflight = False
-
-        self.coordinator.coordinate_reply(session.session_id, user_message, on_reply)
+        # 硬编码默认回复
+        default_reply = "咱们家产品都是根据咱们脸型头围肤色和需求1v1定制的，不是网上千篇一律的假发，您到店买不买我们都提供1.免费试戴+发型设计，您可以留个☎️，我安排老师接待您。"
+        
+        # 直接发送硬编码回复
+        self._send_reply(session.session_id, default_reply)
 
     def _on_reply_prepared(self, session_id: str, reply_text: str):
         """回复准备就绪"""
         self._send_reply(session_id, reply_text)
+
+    def _send_default_reply(self):
+        """发送硬编码的默认回复"""
+        default_reply = "咱们家产品都是根据咱们脸型头围肤色和需求1v1定制的，不是网上千篇一律的假发，您到店买不买我们都提供1.免费试戴+发型设计，您可以留个☎️，我安排老师接待您。"
+        
+        def on_sent(success, result):
+            self.log_message.emit(f"[调试] 发送结果: success={success}, result={result}")
+            if success:
+                self.log_message.emit(f"✅ 回复已发送: {default_reply[:50]}...")
+            else:
+                self.log_message.emit(f"❌ 发送失败: {result}")
+            
+            # 延迟重置状态
+            QTimer.singleShot(2000, self._reset_poll_state)
+        
+        self.log_message.emit(f"📤 正在发送默认回复...")
+        self.browser.send_message(default_reply, on_sent)
 
     def _send_reply(self, session_id: str, reply_text: str):
         """发送回复"""
