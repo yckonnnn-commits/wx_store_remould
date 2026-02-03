@@ -464,7 +464,7 @@ class BrowserService(QObject):
             self.page.runJavaScript(script)
 
     def grab_chat_data(self, callback: Callable):
-        """抓取聊天数据 - 基于微信小店实际结构优化版
+        """抓取聊天数据 - 基于微信小店DOM结构
 
         Args:
             callback: 回调函数，接收 (success, data)
@@ -487,202 +487,104 @@ class BrowserService(QObject):
             }
 
             function getCurrentChatUser() {
-                var result = { name: null, method: null, allCandidates: [] };
-
-                function isValidUserName(text) {
-                    if (!text || text.length < 1 || text.length > 20) return false;
-                    if (/\s/.test(text)) return false;
-                    if (/[0-9]/.test(text)) return false;
-                    if (/[：:？?!！。，,.]/.test(text)) return false;
-                    if (/^星期[一二三四五六日]/.test(text)) return false;
-                    if (/\d{1,2}:\d{2}/.test(text)) return false;
-                    var filterWords = ['转接', '结束', '接待', '开始', '继续', '回复', '进入',
-                                       '用户超时', '客服已结束', '你已超过', '未回复', '会话已结束',
-                                       '会话', '全部', '当前会话'];
-                    for (var f = 0; f < filterWords.length; f++) {
-                        if (text.indexOf(filterWords[f]) !== -1) return false;
-                    }
-                    return true;
-                }
-
-                var headerAreas = document.querySelectorAll('.chat-header, .chat-title, .session-title, [class*="header"]');
-                for (var i = 0; i < headerAreas.length; i++) {
-                    var area = headerAreas[i];
-                    if (!isVisible(area)) continue;
-                    var r = area.getBoundingClientRect();
-                    if (r.left < 300 || r.top > 150) continue;
-                    var text = safeText(area);
-                    if (isValidUserName(text)) {
-                        result.allCandidates.push({source: 'header', text: text});
-                        if (!result.name) { result.name = text; result.method = 'header'; }
+                // 从 .chat-customer-name 获取用户名
+                var nameEl = document.querySelector('.chat-customer-name');
+                if (nameEl && isVisible(nameEl)) {
+                    var name = safeText(nameEl);
+                    if (name && name.length > 0) {
+                        return { name: name, method: 'chat-customer-name' };
                     }
                 }
-
-                var headings = document.querySelectorAll('h1, h2, h3, h4');
-                for (var j = 0; j < headings.length; j++) {
-                    var h = headings[j];
+                
+                // 兜底：从标题区域查找
+                var headings = document.querySelectorAll('h1, h2, h3, h4, .title, .name');
+                for (var i = 0; i < headings.length; i++) {
+                    var h = headings[i];
                     if (!isVisible(h)) continue;
-                    var r = h.getBoundingClientRect();
-                    if (r.left < 300 || r.top > 150) continue;
                     var text = safeText(h);
-                    if (isValidUserName(text)) {
-                        result.allCandidates.push({source: 'heading', text: text});
-                        if (!result.name) { result.name = text; result.method = 'heading'; }
+                    if (text && text.length > 0 && text.length < 30) {
+                        return { name: text, method: 'heading' };
                     }
                 }
-
-                var selectedItems = document.querySelectorAll('[class*="current"], .selected, [aria-selected="true"]');
-                var best = null, bestScore = -1e9;
-                for (var k = 0; k < selectedItems.length; k++) {
-                    var item = selectedItems[k];
-                    if (!isVisible(item)) continue;
-                    var r = item.getBoundingClientRect();
-                    if (r.left > 260) continue;
-                    if (r.top < 130) continue;
-                    var text = safeText(item);
-                    var nameSelectors = ['.name', '.nickname', '.user-name', '.title', '[class*="name"]', '[class*="title"]'];
-                    for (var m = 0; m < nameSelectors.length; m++) {
-                        var nameEl = item.querySelector(nameSelectors[m]);
-                        if (nameEl) { var t = safeText(nameEl); if (t) { text = t; break; } }
-                    }
-                    if (!isValidUserName(text)) continue;
-                    var score = 0;
-                    try {
-                        if (String(item.className || '').indexOf('current') !== -1) score += 200;
-                        if (String(item.className || '').indexOf('selected') !== -1) score += 150;
-                        if (item.getAttribute && item.getAttribute('aria-selected') === 'true') score += 120;
-                    } catch (e) {}
-                    score += Math.floor(r.top / 10);
-                    result.allCandidates.push({source: 'list-item', text: text, score: score});
-                    if (score > bestScore) { bestScore = score; best = { text: text, method: 'list-item' }; }
-                }
-                if (best && !result.name) { result.name = best.text; result.method = best.method; }
-
-                return result;
+                
+                return { name: "未知用户", method: 'fallback' };
             }
 
             function getChatMessages() {
-                var result = { messages: [], userMessages: [], replyMessages: [], debug: [] };
-
-                function findComposer() {
-                    var roleBox = document.querySelector('[role="textbox"]');
-                    if (roleBox && isVisible(roleBox)) return roleBox;
-                    var textareas = Array.from(document.querySelectorAll('textarea')).filter(isVisible);
-                    if (textareas.length) return textareas[0];
-                    var ceList = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
-                    if (ceList.length) return ceList[0];
-                    return null;
+                var result = { messages: [], userMessages: [], kfMessages: [], debug: [] };
+                
+                // 查找聊天消息容器：#chat-scroll-view 或 .chat-scroll-view
+                var chatScrollView = document.getElementById('chat-scroll-view') || document.querySelector('.chat-scroll-view');
+                if (!chatScrollView) {
+                    result.debug.push("未找到聊天滚动容器");
+                    return result;
                 }
-
-                var composer = findComposer();
-                if (!composer) { result.debug.push("未找到输入框"); return result; }
-
-                var chatArea = null, composerRect = composer.getBoundingClientRect();
-                var cur = composer, bestArea = 0;
-                for (var up = 0; up < 12 && cur; up++) {
-                    cur = cur.parentElement;
-                    if (!cur || !isVisible(cur)) continue;
-                    var r = cur.getBoundingClientRect();
-                    if (r.left < 260) continue;
-                    if (r.width < 320 || r.height < 300) continue;
-                    var area = r.width * r.height;
-                    if (area > bestArea) { bestArea = area; chatArea = cur; }
-                }
-
-                if (!chatArea) { result.debug.push("未找到聊天区域"); return result; }
-
-                var chatRect = chatArea.getBoundingClientRect();
-                var messageArea = null, bestMsgArea = 0;
-                var divs = Array.from(chatArea.querySelectorAll('div'));
-                for (var i = 0; i < divs.length; i++) {
-                    var el = divs[i];
-                    if (!isVisible(el)) continue;
-                    if (el === composer || (el.contains && el.contains(composer))) continue;
-                    var r = el.getBoundingClientRect();
-                    if (!r) continue;
-                    if (r.left < chatRect.left - 5) continue;
-                    if (r.top < chatRect.top) continue;
-                    if (r.bottom > composerRect.top + 5) continue;
-                    if (r.height < 200 || r.width < 300) continue;
-                    var st = window.getComputedStyle(el);
-                    var oy = (st && st.overflowY) ? st.overflowY : '';
-                    if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') continue;
-                    var area = r.width * r.height;
-                    if (area > bestMsgArea) { bestMsgArea = area; messageArea = el; }
-                }
-                if (!messageArea) messageArea = chatArea;
-
-                var msgRect = messageArea.getBoundingClientRect();
-                var centerX = msgRect.left + msgRect.width * 0.5;
-                var timeRegex = /^(星期[一二三四五六日](\s*\d{1,2}:\d{2})?|\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2}|\d{2}-\d{2})$/;
-                var systemRegex = /(用户超时未回|客服已结束|你已超.*未回复|会话已结束|两天内仍可再次联系|你撤回了一条消息|对方撤回了一条消息)/;
-
-                var allTexts = [];
-                var walker = document.createTreeWalker(messageArea, NodeFilter.SHOW_TEXT, null, false);
-                var textNode;
-                while (textNode = walker.nextNode()) {
-                    var parent = textNode.parentElement;
-                    if (!parent || !isVisible(parent)) continue;
-                    var text = textNode.textContent.trim();
+                
+                // 查找所有消息项：.message-item
+                var messageItems = chatScrollView.querySelectorAll('.message-item');
+                result.debug.push("找到消息项: " + messageItems.length);
+                
+                for (var i = 0; i < messageItems.length; i++) {
+                    var item = messageItems[i];
+                    if (!isVisible(item)) continue;
+                    
+                    // 判断是客服还是用户消息
+                    // justify-end 表示客服消息（右侧）
+                    var classList = item.className || '';
+                    var isKf = classList.indexOf('justify-end') !== -1;
+                    var isUser = !isKf;
+                    
+                    // 提取消息文本：从 .text-msg 或整个 item
+                    var textMsg = item.querySelector('.text-msg');
+                    var text = '';
+                    if (textMsg) {
+                        text = safeText(textMsg);
+                    } else {
+                        text = safeText(item);
+                    }
+                    
+                    // 过滤空消息和表情
                     if (!text || text.length === 0) continue;
-                    text = text.replace(/^星期[一二三四五六日]\s*\d{1,2}:\d{2}\s*/,'');
-                    text = text.replace(/^\d{4}-\d{2}-\d{2}\s*\d{1,2}:\d{2}\s*/,'');
-                    if (timeRegex.test(text)) continue;
-                    if (systemRegex.test(text)) continue;
-                    var r = parent.getBoundingClientRect();
-                    if (r.top < msgRect.top + 20) continue;
-                    if (r.width < 10 || r.height < 10) continue;
-                    var isUser = r.right < centerX - 30;
-                    var isReply = r.left > centerX + 30;
-                    allTexts.push({ text: text, isUser: isUser, isReply: isReply, top: r.top, left: r.left, right: r.right, width: r.width });
-                }
-
-                result.debug.push("原始文本节点: " + allTexts.length);
-
-                var mergedMessages = [];
-                var currentMsg = null;
-                allTexts.sort(function(a, b) { return a.top - b.top; });
-
-                for (var j = 0; j < allTexts.length; j++) {
-                    var item = allTexts[j];
-                    if (/^\d+$/.test(item.text) && item.text.length < 5) continue;
-                    if (!currentMsg) { currentMsg = item; }
-                    else {
-                        var sameSide = (item.isUser && currentMsg.isUser) || (item.isReply && currentMsg.isReply);
-                        var closeVertical = Math.abs(item.top - currentMsg.top) < 25;
-                        var closeHorizontal = Math.abs(item.left - currentMsg.left) < 100;
-                        if (sameSide && closeVertical && closeHorizontal) {
-                            currentMsg.text += " " + item.text;
-                            currentMsg.width = Math.max(currentMsg.width, item.width);
-                        } else {
-                            mergedMessages.push(currentMsg);
-                            currentMsg = item;
-                        }
+                    if (text.length > 500) continue;
+                    
+                    // 过滤时间戳和系统消息
+                    if (/^\d{1,2}:\d{2}$/.test(text)) continue;
+                    if (/^(昨天|今天|星期[一二三四五六日])\s*\d{1,2}:\d{2}$/.test(text)) continue;
+                    if (/(用户超时未回|会话已结束|两天内仍可再次联系)/.test(text)) continue;
+                    
+                    var msg = {
+                        text: text,
+                        is_user: isUser,
+                        is_kf: isKf
+                    };
+                    
+                    result.messages.push(msg);
+                    if (isUser) {
+                        result.userMessages.push(msg);
+                    } else {
+                        result.kfMessages.push(msg);
                     }
                 }
-                if (currentMsg) mergedMessages.push(currentMsg);
-                result.debug.push("合并后消息: " + mergedMessages.length);
-
-                for (var k = 0; k < mergedMessages.length; k++) {
-                    var msg = mergedMessages[k];
-                    if (msg.text.length < 2 || msg.text.length > 500) continue;
-                    if (systemRegex.test(msg.text)) continue;
-                    result.messages.push({ text: msg.text, isUser: msg.isUser, isReply: msg.isReply, position: {top: msg.top, left: msg.left} });
-                    if (msg.isUser) result.userMessages.push(msg);
-                    else if (msg.isReply) result.replyMessages.push(msg);
-                }
-                result.messages.sort(function(a, b) { return a.position.top - b.position.top; });
+                
+                result.debug.push("有效消息: " + result.messages.length);
+                result.debug.push("用户消息: " + result.userMessages.length);
+                result.debug.push("客服消息: " + result.kfMessages.length);
+                
                 return result;
             }
 
             var userResult = getCurrentChatUser();
             var msgResult = getChatMessages();
 
-            return {
+            return JSON.stringify({
                 timestamp: new Date().toISOString(),
-                user: userResult,
-                messages: msgResult
-            };
+                user_name: userResult.name,
+                user_method: userResult.method,
+                messages: msgResult.messages,
+                user_messages: msgResult.userMessages,
+                kf_messages: msgResult.kfMessages,
+                debug: msgResult.debug
+            });
         })()
         """
         self.run_javascript(script, callback)

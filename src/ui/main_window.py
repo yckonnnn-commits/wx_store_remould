@@ -151,49 +151,9 @@ class MainWindow(QWidget):
         self.left_panel.append_log("🔄 刷新页面...")
 
     def _on_grab_test(self):
-        """测试抓取"""
-        def on_result(success, data):
-            if success and data:
-                try:
-                    user_result = data.get('user', {})
-                    msg_result = data.get('messages', {})
-
-                    self.left_panel.append_log("=== 聊天数据抓取测试 ===")
-
-                    # 用户名
-                    if user_result.get('name'):
-                        self.left_panel.append_log(f"✅ 用户名: {user_result.get('name')}")
-                    else:
-                        self.left_panel.append_log("❌ 未找到用户名")
-
-                    # 消息统计
-                    all_messages = msg_result.get('messages', [])
-                    user_msgs = msg_result.get('userMessages', [])
-                    reply_msgs = msg_result.get('replyMessages', [])
-                    debug = msg_result.get('debug', [])
-
-                    for d in debug:
-                        self.left_panel.append_log(f"调试: {d}")
-
-                    self.left_panel.append_log(f"总消息: {len(all_messages)} | 用户: {len(user_msgs)} | 客服: {len(reply_msgs)}")
-
-                    # 显示最近消息
-                    if all_messages:
-                        self.left_panel.append_log("--- 最近消息 ---")
-                        for m in all_messages[-5:]:
-                            is_user = m.get('isUser', False)
-                            text = m.get('text', '')[:50]
-                            prefix = "👤" if is_user else "🤖"
-                            self.left_panel.append_log(f"  {prefix}: {text}")
-                    else:
-                        self.left_panel.append_log("⚠️ 未找到消息")
-
-                except Exception as e:
-                    self.left_panel.append_log(f"解析结果出错: {e}")
-            else:
-                self.left_panel.append_log("❌ 抓取测试失败")
-
-        self.browser_service.grab_chat_data(on_result)
+        """测试抓取 - 调用格式化显示方法"""
+        self.left_panel.append_log("开始抓取聊天记录...")
+        self.message_processor.grab_and_display_chat_history()
 
     def _on_model_changed(self, model_name: str):
         """模型变更"""

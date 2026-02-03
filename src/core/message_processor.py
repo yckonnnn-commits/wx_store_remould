@@ -228,6 +228,58 @@ class MessageProcessor(QObject):
         if not self._poll_inflight:
             self._poll_cycle()
 
+    def grab_and_display_chat_history(self):
+        """抓取并格式化显示完整聊天记录"""
+        def on_data(success, result):
+            if not success:
+                self.log_message.emit("❌ 抓取聊天记录失败")
+                return
+            
+            try:
+                # 解析JSON字符串
+                if isinstance(result, str):
+                    data = json.loads(result)
+                else:
+                    data = result
+                
+                user_name = data.get("user_name", "未知用户")
+                messages = data.get("messages", [])
+                debug = data.get("debug", [])
+                
+                # 输出调试信息
+                for d in debug:
+                    self.log_message.emit(f"[调试] {d}")
+                
+                if not messages:
+                    self.log_message.emit(f"⚠️ 用户 {user_name} 暂无聊天记录")
+                    return
+                
+                # 格式化输出聊天记录
+                self.log_message.emit(f"\n{'='*50}")
+                self.log_message.emit(f"📋 用户聊天记录：{user_name}")
+                self.log_message.emit(f"{'='*50}\n")
+                
+                for msg in messages:
+                    text = msg.get("text", "")
+                    is_user = msg.get("is_user", False)
+                    is_kf = msg.get("is_kf", False)
+                    
+                    if is_user:
+                        self.log_message.emit(f"❤️‍🔥 用户（{user_name}）：{text}")
+                    elif is_kf:
+                        self.log_message.emit(f"🤖 客服（我）：{text}")
+                    else:
+                        self.log_message.emit(f"💬 {text}")
+                
+                self.log_message.emit(f"\n{'='*50}")
+                self.log_message.emit(f"✅ 共 {len(messages)} 条消息")
+                self.log_message.emit(f"{'='*50}\n")
+                
+            except Exception as e:
+                self.log_message.emit(f"❌ 解析聊天记录错误: {e}")
+        
+        self.browser.grab_chat_data(on_data)
+
     def test_grab(self, callback: Callable = None):
         """测试抓取功能"""
         def on_data(success, data):
