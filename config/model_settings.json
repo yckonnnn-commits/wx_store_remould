@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated_at": "2026-02-03T17:19:53.891506",
-  "current_model": "阿里千问",
+  "updated_at": "2026-02-04T11:09:24.817027",
+  "current_model": "DeepSeek",
   "models": {
     "ChatGPT": {
       "base_url": "https://api.openai.com/v1",
@@ -20,7 +20,7 @@
     },
     "DeepSeek": {
       "base_url": "https://api.deepseek.com",
-      "api_key": "",
+      "api_key": "sk-7b7a85acf9ca47dd86b228eb7a73fad6",
       "model": "deepseek-chat"
     },
     "豆包": {

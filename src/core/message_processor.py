@@ -42,6 +42,8 @@ class MessageProcessor(QObject):
         self._last_user_name = None
         self._last_messages_hash = None
         self._last_chat_user = None  # 记录上次抓取的用户，避免重复抓取
+        self._last_grab_time = 0  # 记录上次抓取时间，防抖
+        self._is_processing_reply = False  # 标记是否正在处理回复
 
         # 定时器
         self._poll_timer = QTimer(self)
@@ -126,7 +128,20 @@ class MessageProcessor(QObject):
         self.browser.run_javascript(script, on_result)
     
     def _auto_grab_chat_history(self):
-        """自动抓取聊天记录"""
+        """自动抓取聊天记录（带防抖）"""
+        import time
+        current_time = time.time()
+        
+        # 防抖：如果距离上次抓取不到5秒，或者正在处理回复，则跳过
+        if current_time - self._last_grab_time < 5.0:
+            self.log_message.emit(f"⏸️ 防抖：距离上次抓取不到5秒，跳过")
+            return
+        
+        if self._is_processing_reply:
+            self.log_message.emit(f"⏸️ 正在处理回复中，跳过本次抓取")
+            return
+        
+        self._last_grab_time = current_time
         self.grab_and_display_chat_history()
 
     def start(self, interval_ms: int = 4000):
@@ -145,9 +160,16 @@ class MessageProcessor(QObject):
 
     def stop(self):
         """停止消息处理"""
+        if not self._running:
+            return
+
         self._running = False
         self._poll_timer.stop()
         self._dom_watch_timer.stop()
+        
+        # 清理LLM服务的工作线程
+        self.llm.cleanup()
+        
         self.status_changed.emit("stopped")
         self.log_message.emit("🛑 AI客服已停止")
 
@@ -367,6 +389,14 @@ class MessageProcessor(QObject):
             chat_history: 完整聊天记录
             latest_message: 最新用户消息
         """
+        # 如果正在处理回复，跳过
+        if self._is_processing_reply:
+            self.log_message.emit(f"⏸️ 已有回复正在处理中，跳过")
+            return
+        
+        # 标记开始处理
+        self._is_processing_reply = True
+        
         # 获取或创建会话
         session = self.sessions.get_or_create_session(
             session_id=f"user_{hash(user_name)}",
@@ -386,15 +416,39 @@ class MessageProcessor(QObject):
         
         self.log_message.emit(f"📤 发送聊天记录给大模型（共{len(conversation_history)}条）...")
         
-        # 调用大模型生成回复
-        def on_llm_reply(request_id: str, reply_text: str):
-            self.log_message.emit(f"✅ 大模型回复完成")
-            self.log_message.emit(f"💬 回复内容: {reply_text[:100]}...")
-            # 发送回复
-            self._send_reply(session.session_id, reply_text)
+        # 生成唯一的request_id用于追踪
+        import uuid
+        request_id = str(uuid.uuid4())
         
-        def on_llm_error(request_id: str, error_msg: str):
-            self.log_message.emit(f"❌ 大模型调用失败: {error_msg}")
+        # 调用大模型生成回复（使用lambda避免闭包问题）
+        def on_llm_reply(rid: str, reply_text: str):
+            # 只处理当前请求的回复
+            if rid == request_id:
+                self.log_message.emit(f"✅ 大模型回复完成")
+                self.log_message.emit(f"💬 回复内容: {reply_text[:100]}...")
+                # 发送回复
+                self._send_reply(session.session_id, reply_text)
+                # 重置处理状态
+                self._is_processing_reply = False
+                # 断开信号连接，避免重复触发
+                try:
+                    self.llm.reply_ready.disconnect(on_llm_reply)
+                    self.llm.error_occurred.disconnect(on_llm_error)
+                except:
+                    pass
+        
+        def on_llm_error(rid: str, error_msg: str):
+            # 只处理当前请求的错误
+            if rid == request_id:
+                self.log_message.emit(f"❌ 大模型调用失败: {error_msg}")
+                # 重置处理状态
+                self._is_processing_reply = False
+                # 断开信号连接
+                try:
+                    self.llm.reply_ready.disconnect(on_llm_reply)
+                    self.llm.error_occurred.disconnect(on_llm_error)
+                except:
+                    pass
         
         # 连接LLM信号
         self.llm.reply_ready.connect(on_llm_reply)
@@ -402,9 +456,10 @@ class MessageProcessor(QObject):
         
         # 生成回复（使用对话历史）
         self.log_message.emit(f"⏳ 大模型处理中...")
-        request_id = self.llm.generate_reply(
+        self.llm.generate_reply(
             user_message=latest_message,
-            conversation_history=conversation_history[:-1] if len(conversation_history) > 1 else None
+            conversation_history=conversation_history[:-1] if len(conversation_history) > 1 else None,
+            request_id=request_id
         )
 
     def test_grab(self, callback: Callable = None):
