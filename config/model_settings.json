@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-02-04T11:09:24.817027",
+  "updated_at": "2026-02-04T13:21:44.645907",
   "current_model": "DeepSeek",
   "models": {
     "ChatGPT": {
@@ -19,9 +19,9 @@
       "model": "qwen-plus"
     },
     "DeepSeek": {
-      "base_url": "https://api.deepseek.com",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "api_key": "sk-7b7a85acf9ca47dd86b228eb7a73fad6",
-      "model": "deepseek-chat"
+      "model": "deepseek-v3.2"
     },
     "豆包": {
       "base_url": "",

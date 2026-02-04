@@ -42,9 +42,9 @@ class ConfigManager(QObject):
                     "model": "qwen-plus"
                 },
                 "DeepSeek": {
-                    "base_url": "https://api.deepseek.com",
+                    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                     "api_key": "",
-                    "model": "deepseek-chat"
+                    "model": "deepseek-v3.2"
                 },
                 "豆包": {
                     "base_url": "",
@@ -110,12 +110,12 @@ class ConfigManager(QObject):
             if self.config_file:
                 self.config_file.parent.mkdir(parents=True, exist_ok=True)
                 
-                # 先重新加载文件中的配置，避免覆盖用户手动添加的 API Key
+                # 先重新加载文件中的配置，避免覆盖用户手动添加的配置
                 if self.config_file.exists():
                     with open(self.config_file, 'r', encoding='utf-8') as f:
                         file_config = json.load(f)
-                        # 合并：保留文件中的 API Key，更新其他配置
-                        self._settings = self._merge_preserve_keys(file_config, self._settings, preserve_keys=['api_key'])
+                        # 合并：保留文件中的用户手动配置，更新其他配置
+                        self._settings = self._merge_preserve_keys(file_config, self._settings, preserve_keys=['api_key', 'base_url', 'model'])
                 
                 self._settings["updated_at"] = datetime.now().isoformat()
                 with open(self.config_file, 'w', encoding='utf-8') as f:
