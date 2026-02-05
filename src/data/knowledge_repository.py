@@ -15,10 +15,13 @@ from PySide6.QtCore import QObject, Signal
 class KnowledgeItem:
     """知识库条目"""
 
-    def __init__(self, question: str = "", answer: str = "", item_id: str = None):
+    def __init__(self, question: str = "", answer: str = "", item_id: str = None,
+                 category: str = "", tags: Optional[List[str]] = None):
         self.id = item_id or str(uuid.uuid4())
         self.question = question.strip() if question else ""
         self.answer = answer.strip() if answer else ""
+        self.category = category.strip() if category else ""
+        self.tags = [t.strip() for t in (tags or []) if t.strip()]
         self.created_at = datetime.now().isoformat()
         self.updated_at = datetime.now().isoformat()
 
@@ -27,6 +30,8 @@ class KnowledgeItem:
             "id": self.id,
             "question": self.question,
             "answer": self.answer,
+            "category": self.category,
+            "tags": self.tags,
             "created_at": self.created_at,
             "updated_at": self.updated_at
         }
@@ -37,6 +42,8 @@ class KnowledgeItem:
         item.id = data.get("id", str(uuid.uuid4()))
         item.question = data.get("question", "")
         item.answer = data.get("answer", "")
+        item.category = data.get("category", "")
+        item.tags = data.get("tags", []) or []
         item.created_at = data.get("created_at", datetime.now().isoformat())
         item.updated_at = data.get("updated_at", datetime.now().isoformat())
         return item
@@ -97,16 +104,17 @@ class KnowledgeRepository(QObject):
                 return item
         return None
 
-    def add(self, question: str, answer: str) -> KnowledgeItem:
+    def add(self, question: str, answer: str, category: str = "", tags: Optional[List[str]] = None) -> KnowledgeItem:
         """添加新条目"""
-        item = KnowledgeItem(question=question, answer=answer)
+        item = KnowledgeItem(question=question, answer=answer, category=category, tags=tags)
         self._items.append(item)
         self._search_cache.clear()
         self.data_changed.emit()
         self.save()
         return item
 
-    def update(self, item_id: str, question: str = None, answer: str = None) -> bool:
+    def update(self, item_id: str, question: str = None, answer: str = None,
+               category: str = None, tags: Optional[List[str]] = None) -> bool:
         """更新条目"""
         item = self.get_by_id(item_id)
         if not item:
@@ -116,6 +124,10 @@ class KnowledgeRepository(QObject):
             item.question = question.strip()
         if answer is not None:
             item.answer = answer.strip()
+        if category is not None:
+            item.category = category.strip()
+        if tags is not None:
+            item.tags = [t.strip() for t in tags if t.strip()]
         item.updated_at = datetime.now().isoformat()
 
         self._search_cache.clear()
@@ -239,8 +251,10 @@ class KnowledgeRepository(QObject):
                         if isinstance(item_data, dict):
                             question = item_data.get('question') or item_data.get('q')
                             answer = item_data.get('answer') or item_data.get('a')
+                            category = item_data.get('category', '')
+                            tags = item_data.get('tags', []) or []
                             if question and answer:
-                                self.add(question, answer)
+                                self.add(question, answer, category=category, tags=tags)
                                 success += 1
                             else:
                                 failed += 1

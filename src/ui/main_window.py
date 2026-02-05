@@ -22,6 +22,7 @@ from .left_panel import LeftPanel
 from .browser_tab import BrowserTab
 from .knowledge_tab import KnowledgeTab
 from .model_config_tab import ModelConfigTab
+from .image_management_tab import ImageManagementTab
 
 
 class MainWindow(QWidget):
@@ -91,6 +92,10 @@ class MainWindow(QWidget):
         self.model_config_tab = ModelConfigTab(self.config_manager)
         self.tab_widget.addTab(self.model_config_tab, "⚙️ 模型配置")
 
+        # 图片管理标签
+        self.image_management_tab = ImageManagementTab()
+        self.tab_widget.addTab(self.image_management_tab, "🖼️ 图片管理")
+
         main_layout.addWidget(self.tab_widget, 1)
 
         # 初始化浏览器服务
@@ -128,6 +133,9 @@ class MainWindow(QWidget):
         # 模型配置保存
         self.model_config_tab.config_saved.connect(self._on_config_saved)
         self.model_config_tab.log_message.connect(self._on_log_message)
+
+        # 图片管理日志
+        self.image_management_tab.log_message.connect(self._on_log_message)
 
     def _load_wechat_store(self):
         """加载微信小店"""

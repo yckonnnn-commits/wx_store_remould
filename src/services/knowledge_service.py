@@ -53,7 +53,7 @@ class KnowledgeService(QObject):
             return result[0]  # 返回答案文本
         return None
 
-    def add_item(self, question: str, answer: str) -> Optional[str]:
+    def add_item(self, question: str, answer: str, category: str = "", tags: Optional[List[str]] = None) -> Optional[str]:
         """添加知识库条目
 
         Returns:
@@ -62,13 +62,14 @@ class KnowledgeService(QObject):
         if not question or not answer:
             return None
 
-        item = self.repository.add(question, answer)
+        item = self.repository.add(question, answer, category=category, tags=tags)
         self.item_added.emit(item.id)
         return item.id
 
-    def update_item(self, item_id: str, question: str = None, answer: str = None) -> bool:
+    def update_item(self, item_id: str, question: str = None, answer: str = None,
+                    category: str = None, tags: Optional[List[str]] = None) -> bool:
         """更新知识库条目"""
-        success = self.repository.update(item_id, question, answer)
+        success = self.repository.update(item_id, question, answer, category=category, tags=tags)
         if success:
             self.item_updated.emit(item_id)
         return success
