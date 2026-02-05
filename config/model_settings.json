@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "updated_at": "2026-02-05T09:57:00.831616",
+  "updated_at": "2026-02-05T10:31:08.668074",
   "current_model": "DeepSeek",
   "models": {
     "ChatGPT": {
       "base_url": "https://api.openai.com/v1",
-      "api_key": "",
+      "api_key": "dadada",
       "model": "gpt-4o-mini"
     },
     "Gemini": {
@@ -25,7 +25,7 @@
     },
     "豆包": {
       "base_url": "",
-      "api_key": "",
+      "api_key": "adadad",
       "model": ""
     },
     "kimi": {

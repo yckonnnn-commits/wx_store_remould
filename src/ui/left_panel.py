@@ -25,14 +25,14 @@ class LeftPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("LeftPanel")
-        self.setFixedWidth(360)
+        self.setFixedWidth(300)
         self._setup_ui()
 
     def _setup_ui(self):
         """设置UI"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(14)
 
         # 标题卡片
         title_card = self._create_card()
@@ -129,7 +129,6 @@ class LeftPanel(QFrame):
         # 日志区域
         log_label = QLabel("运行日志")
         log_label.setObjectName("SectionTitle")
-        log_label.setStyleSheet("color: rgba(248,250,252,0.88);")
         layout.addWidget(log_label)
 
         self.log_view = QTextEdit()

@@ -95,7 +95,7 @@ class KnowledgeTab(QWidget):
         header_layout = QHBoxLayout()
 
         title = QLabel("知识库管理")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #f8fafc;")
+        title.setObjectName("PageTitle")
         header_layout.addWidget(title)
 
         header_layout.addStretch()
@@ -109,17 +109,17 @@ class KnowledgeTab(QWidget):
 
         # 操作按钮
         self.add_btn = QPushButton("➕ 添加")
-        self.add_btn.setObjectName("Tiny")
+        self.add_btn.setObjectName("Secondary")
         self.add_btn.clicked.connect(self._on_add)
         header_layout.addWidget(self.add_btn)
 
         self.import_btn = QPushButton("📥 导入")
-        self.import_btn.setObjectName("Tiny")
+        self.import_btn.setObjectName("Secondary")
         self.import_btn.clicked.connect(self._on_import)
         header_layout.addWidget(self.import_btn)
 
         self.export_btn = QPushButton("📤 导出")
-        self.export_btn.setObjectName("Tiny")
+        self.export_btn.setObjectName("Secondary")
         self.export_btn.clicked.connect(self._on_export)
         header_layout.addWidget(self.export_btn)
 
@@ -127,22 +127,40 @@ class KnowledgeTab(QWidget):
 
         # 统计信息
         self.stats_label = QLabel("共 0 条")
-        self.stats_label.setStyleSheet("color: rgba(248,250,252,0.7);")
+        self.stats_label.setObjectName("MutedText")
         layout.addWidget(self.stats_label)
 
         # 表格
         self.table = QTableWidget()
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["问题", "答案", "操作"])
+        # 头部左对齐（问题/答案），操作列居中
+        header_question = QTableWidgetItem("问题")
+        header_question.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.table.setHorizontalHeaderItem(0, header_question)
+
+        header_answer = QTableWidgetItem("答案")
+        header_answer.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.table.setHorizontalHeaderItem(1, header_answer)
+
+        header_action = QTableWidgetItem("操作")
+        header_action.setTextAlignment(Qt.AlignCenter)
+        self.table.setHorizontalHeaderItem(2, header_action)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.table.horizontalHeader().setDefaultSectionSize(150)
-        self.table.setColumnWidth(2, 150)
+        self.table.setColumnWidth(2, 200)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(52)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                alternate-background-color: #f2e9da;
+            }
+        """)
         layout.addWidget(self.table, 1)
 
     def _load_data(self):
@@ -157,12 +175,14 @@ class KnowledgeTab(QWidget):
         for i, item in enumerate(items):
             # 问题
             question_item = QTableWidgetItem(item.question)
+            question_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             question_item.setData(Qt.ItemDataRole.UserRole, item.id)
             question_item.setToolTip(item.question)
             self.table.setItem(i, 0, question_item)
 
             # 答案
             answer_item = QTableWidgetItem(item.answer)
+            answer_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             answer_item.setToolTip(item.answer)
             self.table.setItem(i, 1, answer_item)
 
@@ -171,15 +191,20 @@ class KnowledgeTab(QWidget):
             btn_layout = QHBoxLayout(btn_widget)
             btn_layout.setContentsMargins(4, 4, 4, 4)
             btn_layout.setSpacing(8)
+            btn_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
             edit_btn = QPushButton("✏️ 编辑")
-            edit_btn.setFixedWidth(60)
+            edit_btn.setFixedWidth(70)
+            edit_btn.setMinimumHeight(30)
+            edit_btn.setObjectName("Ghost")
             edit_btn.setProperty("item_id", item.id)
             edit_btn.clicked.connect(lambda checked, id=item.id: self._on_edit(id))
             btn_layout.addWidget(edit_btn)
 
             delete_btn = QPushButton("🗑️ 删除")
-            delete_btn.setFixedWidth(60)
+            delete_btn.setFixedWidth(70)
+            delete_btn.setMinimumHeight(30)
+            delete_btn.setObjectName("GhostDanger")
             delete_btn.setProperty("item_id", item.id)
             delete_btn.clicked.connect(lambda checked, id=item.id: self._on_delete(id))
             btn_layout.addWidget(delete_btn)

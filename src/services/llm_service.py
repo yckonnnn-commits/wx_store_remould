@@ -18,13 +18,14 @@ class LLMWorker(QThread):
     result_ready = Signal(str, bool, str)  # (request_id, success, result/error)
 
     def __init__(self, request_id: str, model_name: str, config: dict,
-                 messages: List[Dict], system_prompt: str):
+                 messages: List[Dict], system_prompt: str, max_tokens: int = 500):
         super().__init__()
         self.request_id = request_id
         self.model_name = model_name
         self.config = config
         self.messages = messages
         self.system_prompt = system_prompt
+        self.max_tokens = max_tokens
 
     def run(self):
         """执行API调用"""
@@ -73,7 +74,7 @@ class LLMWorker(QThread):
                 *self.messages
             ],
             "temperature": 0.7,
-            "max_tokens": 500
+            "max_tokens": self.max_tokens
         }
 
         req = urllib.request.Request(
@@ -106,7 +107,7 @@ class LLMWorker(QThread):
             "contents": contents,
             "generationConfig": {
                 "temperature": 0.7,
-                "maxOutputTokens": 500
+                "maxOutputTokens": self.max_tokens
             }
         }
 
@@ -151,7 +152,7 @@ class LLMWorker(QThread):
             "input": {"prompt": prompt},
             "parameters": {
                 "temperature": 0.7,
-                "max_tokens": 500
+                "max_tokens": self.max_tokens
             }
         }
 
@@ -187,7 +188,7 @@ class LLMWorker(QThread):
                 *self.messages
             ],
             "temperature": 0.7,
-            "max_tokens": 500
+            "max_tokens": self.max_tokens
         }
 
         req = urllib.request.Request(
@@ -222,7 +223,7 @@ class LLMWorker(QThread):
                 *self.messages
             ],
             "temperature": 0.7,
-            "max_tokens": 500
+            "max_tokens": self.max_tokens
         }
 
         req = urllib.request.Request(
@@ -426,15 +427,16 @@ class LLMService(QObject):
             return False, "API地址未配置"
 
         try:
-            # 发送简单测试请求
+            # 发送最小测试请求（可能产生少量token消耗）
             worker = LLMWorker(
                 request_id="test",
                 model_name=model_name,
                 config=config,
-                messages=[{"role": "user", "content": "你好"}],
-                system_prompt="你是一个助手"
+                messages=[{"role": "user", "content": "ping"}],
+                system_prompt="你是一个助手",
+                max_tokens=1
             )
-            worker.run()  # 同步执行
+            worker._call_api()  # 直接调用以捕获鉴权/连接错误
             return True, "连接成功"
         except Exception as e:
             return False, f"连接失败: {str(e)}"

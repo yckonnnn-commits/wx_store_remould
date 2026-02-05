@@ -127,6 +127,7 @@ class MainWindow(QWidget):
 
         # 模型配置保存
         self.model_config_tab.config_saved.connect(self._on_config_saved)
+        self.model_config_tab.log_message.connect(self._on_log_message)
 
     def _load_wechat_store(self):
         """加载微信小店"""

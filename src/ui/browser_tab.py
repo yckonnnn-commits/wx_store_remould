@@ -43,21 +43,25 @@ class BrowserTab(QWidget):
         # 导航按钮
         self.back_btn = QPushButton("◀")
         self.back_btn.setFixedWidth(40)
+        self.back_btn.setObjectName("Ghost")
         self.back_btn.clicked.connect(self._on_back)
         nav_layout.addWidget(self.back_btn)
 
         self.forward_btn = QPushButton("▶")
         self.forward_btn.setFixedWidth(40)
+        self.forward_btn.setObjectName("Ghost")
         self.forward_btn.clicked.connect(self._on_forward)
         nav_layout.addWidget(self.forward_btn)
 
         self.refresh_btn = QPushButton("🔄")
         self.refresh_btn.setFixedWidth(50)
+        self.refresh_btn.setObjectName("Ghost")
         self.refresh_btn.clicked.connect(self._on_refresh)
         nav_layout.addWidget(self.refresh_btn)
 
         self.go_btn = QPushButton("前往")
         self.go_btn.setFixedWidth(60)
+        self.go_btn.setObjectName("Primary")
         self.go_btn.clicked.connect(self._on_navigate)
         nav_layout.addWidget(self.go_btn)
 

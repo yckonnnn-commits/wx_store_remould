@@ -17,11 +17,13 @@ class ModelConfigTab(QWidget):
     """模型配置标签页"""
 
     config_saved = Signal()
+    log_message = Signal(str)
 
     def __init__(self, config_manager: ConfigManager, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
         self._model_inputs = {}
+        self._model_test_buttons = {}
         self._setup_ui()
         self._load_settings()
 
@@ -33,13 +35,13 @@ class ModelConfigTab(QWidget):
 
         # 标题
         title = QLabel("AI 模型配置")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #f8fafc;")
+        title.setObjectName("PageTitle")
         layout.addWidget(title)
 
         # 当前模型选择
         current_layout = QHBoxLayout()
         current_label = QLabel("当前使用模型:")
-        current_label.setStyleSheet("color: rgba(248,250,252,0.88); font-weight: 600;")
+        current_label.setObjectName("MutedText")
         current_layout.addWidget(current_label)
 
         self.current_model_combo = QComboBox()
@@ -55,7 +57,7 @@ class ModelConfigTab(QWidget):
         # 分隔线
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet("background: rgba(255,255,255,0.1); max-height: 1px;")
+        line.setStyleSheet("background: #e7ddcd; max-height: 1px;")
         layout.addWidget(line)
 
         # 滚动区域
@@ -82,11 +84,6 @@ class ModelConfigTab(QWidget):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        self.test_btn = QPushButton("🧪 测试连接")
-        self.test_btn.setObjectName("Secondary")
-        self.test_btn.clicked.connect(self._on_test)
-        btn_layout.addWidget(self.test_btn)
-
         self.save_btn = QPushButton("💾 保存配置")
         self.save_btn.setObjectName("Primary")
         self.save_btn.clicked.connect(self._on_save)
@@ -99,10 +96,11 @@ class ModelConfigTab(QWidget):
         group = QGroupBox(model_name)
         group.setStyleSheet("""
             QGroupBox {
-                color: rgba(248,250,252,0.92);
+                color: #2a231b;
                 font-weight: 600;
-                border: 1px solid rgba(255,255,255,0.1);
-                border-radius: 10px;
+                background: #f2e9da;
+                border: 1px solid rgba(0,0,0,0.10);
+                border-radius: 12px;
                 margin-top: 12px;
                 padding-top: 12px;
             }
@@ -110,6 +108,7 @@ class ModelConfigTab(QWidget):
                 subcontrol-origin: margin;
                 left: 12px;
                 padding: 0 8px;
+                background: #f6f2ea;
             }
         """)
 
@@ -132,12 +131,19 @@ class ModelConfigTab(QWidget):
         model_input.setPlaceholderText("model-name")
         form_layout.addRow("模型名称:", model_input)
 
+        # 测试按钮
+        test_btn = QPushButton("🧪 测试连接")
+        test_btn.setObjectName("Secondary")
+        test_btn.clicked.connect(lambda checked=False, name=model_name: self._on_test_model(name))
+        form_layout.addRow("连接测试:", test_btn)
+
         # 保存引用
         self._model_inputs[model_name] = {
             "base_url": base_url_input,
             "api_key": api_key_input,
             "model": model_input
         }
+        self._model_test_buttons[model_name] = test_btn
 
         return group
 
@@ -178,9 +184,8 @@ class ModelConfigTab(QWidget):
         else:
             QMessageBox.warning(self, "保存失败", "配置保存失败")
 
-    def _on_test(self):
-        """测试连接"""
-        model_name = self.current_model_combo.currentText()
+    def _on_test_model(self, model_name: str):
+        """测试指定模型连接"""
 
         # 保存当前配置
         inputs = self._model_inputs.get(model_name, {})
@@ -199,8 +204,10 @@ class ModelConfigTab(QWidget):
             return
 
         # 显示测试中
-        self.test_btn.setEnabled(False)
-        self.test_btn.setText("🧪 测试中...")
+        test_btn = self._model_test_buttons.get(model_name)
+        if test_btn:
+            test_btn.setEnabled(False)
+            test_btn.setText("🧪 测试中...")
 
         # 使用 LLMService 测试
         from ..services.llm_service import LLMService
@@ -215,13 +222,16 @@ class ModelConfigTab(QWidget):
         def test():
             success, message = temp_service.test_connection(model_name)
 
-            self.test_btn.setEnabled(True)
-            self.test_btn.setText("🧪 测试连接")
+            if test_btn:
+                test_btn.setEnabled(True)
+                test_btn.setText("🧪 测试连接")
 
             if success:
                 QMessageBox.information(self, "测试成功", message)
+                self.log_message.emit(f"✅ {model_name} 测试成功: {message}")
             else:
                 QMessageBox.warning(self, "测试失败", message)
+                self.log_message.emit(f"❌ {model_name} 测试失败: {message}")
 
         # 延迟执行
         from PySide6.QtCore import QTimer
