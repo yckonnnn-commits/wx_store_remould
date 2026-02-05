@@ -131,16 +131,21 @@ class MessageProcessor(QObject):
         """自动抓取聊天记录（带防抖）"""
         import time
         current_time = time.time()
-        
+
+        # 关键检查：AI必须处于启动状态才允许自动回复
+        if not self._running:
+            self.log_message.emit(f"⏸️ AI未启动，跳过自动抓取")
+            return
+
         # 防抖：如果距离上次抓取不到5秒，或者正在处理回复，则跳过
         if current_time - self._last_grab_time < 5.0:
             self.log_message.emit(f"⏸️ 防抖：距离上次抓取不到5秒，跳过")
             return
-        
+
         if self._is_processing_reply:
             self.log_message.emit(f"⏸️ 正在处理回复中，跳过本次抓取")
             return
-        
+
         self._last_grab_time = current_time
         self.grab_and_display_chat_history()
 
@@ -370,6 +375,11 @@ class MessageProcessor(QObject):
                 
                 # 如果启用自动回复且有用户消息
                 if auto_reply and user_messages:
+                    # 关键检查：最后一条消息必须是用户发的才回复
+                    if messages and not messages[-1].get("is_user", False):
+                        self.log_message.emit(f"⏸️ 最后一条消息不是用户发的，跳过自动回复")
+                        return
+
                     # 提取最新的用户消息
                     latest_user_msg = user_messages[-1].get("text", "")
                     if latest_user_msg:
@@ -383,7 +393,7 @@ class MessageProcessor(QObject):
     
     def _generate_reply_from_history(self, user_name: str, chat_history: list, latest_message: str):
         """根据聊天记录生成回复
-        
+
         Args:
             user_name: 用户名
             chat_history: 完整聊天记录
@@ -393,74 +403,70 @@ class MessageProcessor(QObject):
         if self._is_processing_reply:
             self.log_message.emit(f"⏸️ 已有回复正在处理中，跳过")
             return
-        
+
         # 标记开始处理
         self._is_processing_reply = True
-        
+
         # 获取或创建会话
         session = self.sessions.get_or_create_session(
             session_id=f"user_{hash(user_name)}",
             user_name=user_name
         )
-        
+
+        # 记录用户消息到会话
+        self.sessions.add_message(session.session_id, latest_message, is_user=True)
+
         # 构建对话历史（格式化为大模型可理解的格式）
         conversation_history = []
         for msg in chat_history[-10:]:  # 只取最近10条消息
             text = msg.get("text", "")
             is_user = msg.get("is_user", False)
-            
+
             if is_user:
                 conversation_history.append({"role": "user", "content": text})
             else:
                 conversation_history.append({"role": "assistant", "content": text})
-        
+
         self.log_message.emit(f"📤 发送聊天记录给大模型（共{len(conversation_history)}条）...")
-        
-        # 生成唯一的request_id用于追踪
-        import uuid
-        request_id = str(uuid.uuid4())
-        
-        # 调用大模型生成回复（使用lambda避免闭包问题）
-        def on_llm_reply(rid: str, reply_text: str):
-            # 只处理当前请求的回复
-            if rid == request_id:
+
+        # 使用协调器生成回复（避免直接调用LLM导致重复发送）
+        self.log_message.emit(f"⏳ 大模型处理中...")
+
+        # 临时断开 coordinator 的 reply_prepared 信号，避免重复发送
+        # 因为 coordinate_reply 会同时触发 callback 和 reply_prepared 信号
+        self.coordinator.reply_prepared.disconnect(self._on_reply_prepared)
+
+        def on_reply(success, reply_text):
+            if success and reply_text:
                 self.log_message.emit(f"✅ 大模型回复完成")
                 self.log_message.emit(f"💬 回复内容: {reply_text[:100]}...")
                 # 发送回复
                 self._send_reply(session.session_id, reply_text)
-                # 重置处理状态
-                self._is_processing_reply = False
-                # 断开信号连接，避免重复触发
-                try:
-                    self.llm.reply_ready.disconnect(on_llm_reply)
-                    self.llm.error_occurred.disconnect(on_llm_error)
-                except:
-                    pass
-        
-        def on_llm_error(rid: str, error_msg: str):
-            # 只处理当前请求的错误
-            if rid == request_id:
-                self.log_message.emit(f"❌ 大模型调用失败: {error_msg}")
-                # 重置处理状态
-                self._is_processing_reply = False
-                # 断开信号连接
-                try:
-                    self.llm.reply_ready.disconnect(on_llm_reply)
-                    self.llm.error_occurred.disconnect(on_llm_error)
-                except:
-                    pass
-        
-        # 连接LLM信号
-        self.llm.reply_ready.connect(on_llm_reply)
-        self.llm.error_occurred.connect(on_llm_error)
-        
-        # 生成回复（使用对话历史）
-        self.log_message.emit(f"⏳ 大模型处理中...")
-        self.llm.generate_reply(
+            else:
+                self.log_message.emit(f"❌ 大模型生成回复失败")
+            # 重置处理状态
+            self._is_processing_reply = False
+            # 恢复 coordinator 的信号连接
+            try:
+                self.coordinator.reply_prepared.connect(self._on_reply_prepared)
+            except:
+                pass
+
+        # 调用协调器
+        success = self.coordinator.coordinate_reply(
+            session_id=session.session_id,
             user_message=latest_message,
-            conversation_history=conversation_history[:-1] if len(conversation_history) > 1 else None,
-            request_id=request_id
+            callback=on_reply
         )
+
+        if not success:
+            self.log_message.emit(f"⏸️ 协调器未启动回复流程（可能触发频率限制）")
+            self._is_processing_reply = False
+            # 恢复 coordinator 的信号连接
+            try:
+                self.coordinator.reply_prepared.connect(self._on_reply_prepared)
+            except:
+                pass
 
     def test_grab(self, callback: Callable = None):
         """测试抓取功能"""
