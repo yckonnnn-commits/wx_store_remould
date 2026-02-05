@@ -4,9 +4,9 @@
 """
 
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QHBoxLayout, QVBoxLayout, QTabWidget
+    QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget,
+    QFrame, QPushButton, QLabel, QButtonGroup
 )
-from PySide6.QtCore import Qt, Signal
 
 from ..utils.constants import MAIN_STYLE_SHEET, WECHAT_STORE_URL
 from ..data.config_manager import ConfigManager
@@ -77,26 +77,65 @@ class MainWindow(QWidget):
         self.left_panel = LeftPanel(self)
         main_layout.addWidget(self.left_panel)
 
-        # 右侧标签页
-        self.tab_widget = QTabWidget()
+        # 右侧内容区
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
 
-        # 网页标签
+        # 顶部导航栏
+        top_bar = QFrame()
+        top_bar.setObjectName("TopBar")
+        top_bar.setFixedHeight(56)
+        top_layout = QHBoxLayout(top_bar)
+        top_layout.setContentsMargins(16, 0, 16, 0)
+        top_layout.setSpacing(4)
+
+        self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
+
+        nav_items = [
+            ("shop", "微信小店"),
+            ("knowledge", "知识库管理"),
+            ("model", "模型配置"),
+            ("images", "图片管理")
+        ]
+        self.nav_buttons = {}
+        for index, (key, label) in enumerate(nav_items):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setObjectName("NavTab")
+            if index == 0:
+                btn.setChecked(True)
+            self.nav_group.addButton(btn, index)
+            self.nav_buttons[key] = btn
+            top_layout.addWidget(btn)
+
+        top_layout.addStretch()
+
+        self.model_badge = QLabel()
+        self.model_badge.setObjectName("ModelBadge")
+        top_layout.addWidget(self.model_badge)
+        content_layout.addWidget(top_bar)
+
+        # 页面容器
+        self.stack = QStackedWidget()
+
         self.browser_tab = BrowserTab()
-        self.tab_widget.addTab(self.browser_tab, "🌐 微信小店")
+        self.stack.addWidget(self.browser_tab)
 
-        # 知识库标签
         self.knowledge_tab = KnowledgeTab(self.knowledge_repository)
-        self.tab_widget.addTab(self.knowledge_tab, "📚 知识库")
+        self.stack.addWidget(self.knowledge_tab)
 
-        # 模型配置标签
         self.model_config_tab = ModelConfigTab(self.config_manager)
-        self.tab_widget.addTab(self.model_config_tab, "⚙️ 模型配置")
+        self.stack.addWidget(self.model_config_tab)
 
-        # 图片管理标签
         self.image_management_tab = ImageManagementTab()
-        self.tab_widget.addTab(self.image_management_tab, "🖼️ 图片管理")
+        self.stack.addWidget(self.image_management_tab)
 
-        main_layout.addWidget(self.tab_widget, 1)
+        content_layout.addWidget(self.stack, 1)
+
+        main_layout.addWidget(content, 1)
 
         # 初始化浏览器服务
         self.browser_service = BrowserService(self.browser_tab.get_web_view())
@@ -109,8 +148,9 @@ class MainWindow(QWidget):
         )
 
         # 设置当前模型
+        # 设置当前模型
         current_model = self.config_manager.get_current_model()
-        self.left_panel.set_model(current_model)
+        self._update_model_badge()
 
     def _connect_signals(self):
         """连接信号"""
@@ -119,7 +159,12 @@ class MainWindow(QWidget):
         self.left_panel.stop_clicked.connect(self._on_stop)
         self.left_panel.refresh_clicked.connect(self._on_refresh)
         self.left_panel.grab_clicked.connect(self._on_grab_test)
-        self.left_panel.model_changed.connect(self._on_model_changed)
+
+
+        # 顶部导航
+        self.nav_group.buttonClicked.connect(
+            lambda btn: self.stack.setCurrentIndex(self.nav_group.id(btn))
+        )
 
         # 浏览器信号
         self.browser_service.page_loaded.connect(self._on_page_loaded)
@@ -133,6 +178,7 @@ class MainWindow(QWidget):
         # 模型配置保存
         self.model_config_tab.config_saved.connect(self._on_config_saved)
         self.model_config_tab.log_message.connect(self._on_log_message)
+        self.model_config_tab.current_model_changed.connect(self._on_model_changed)
 
         # 图片管理日志
         self.image_management_tab.log_message.connect(self._on_log_message)
@@ -169,6 +215,8 @@ class MainWindow(QWidget):
         self.config_manager.set_current_model(model_name)
         self.config_manager.save()
         self.left_panel.append_log(f"🤖 切换到模型: {model_name}")
+        self._update_model_badge()
+        self.model_config_tab.set_current_model(model_name)
 
     def _on_page_loaded(self, success: bool):
         """页面加载完成"""
@@ -203,8 +251,15 @@ class MainWindow(QWidget):
     def _on_config_saved(self):
         """配置已保存"""
         # 重新加载模型配置
+        # 重新加载模型配置
         current_model = self.config_manager.get_current_model()
-        self.left_panel.set_model(current_model)
+        self._update_model_badge()
+        self.model_config_tab.set_current_model(current_model)
+
+    def _update_model_badge(self):
+        """更新顶部模型徽标"""
+        current_model = self.config_manager.get_current_model()
+        self.model_badge.setText(current_model)
 
     def closeEvent(self, event):
         """关闭事件"""

@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QMessageBox, QFileDialog,
-    QDialog, QDialogButtonBox, QFormLayout, QTextEdit, QComboBox
+    QDialog, QDialogButtonBox, QFormLayout, QTextEdit, QComboBox, QFrame
 )
 from PySide6.QtCore import Qt, Signal
 
@@ -117,93 +117,134 @@ class KnowledgeTab(QWidget):
     def _setup_ui(self):
         """设置UI"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(32, 32, 32, 32)
+        layout.setSpacing(24)
 
-        # 标题和操作栏
+        # --- Header ---
         header_layout = QHBoxLayout()
 
+        title_wrap = QVBoxLayout()
+        title_wrap.setSpacing(4)
         title = QLabel("知识库管理")
         title.setObjectName("PageTitle")
-        header_layout.addWidget(title)
+        title_wrap.addWidget(title)
+        
+        subtitle = QLabel("维护 AI 的回复逻辑与业务话术")
+        subtitle.setObjectName("PageSubtitle")
+        title_wrap.addWidget(subtitle)
 
+        header_layout.addLayout(title_wrap)
         header_layout.addStretch()
 
-        # 搜索框
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍 搜索知识库...")
-        self.search_input.setFixedWidth(300)
-        self.search_input.textChanged.connect(self._on_search)
-        header_layout.addWidget(self.search_input)
-
-        # 操作按钮
-        self.add_btn = QPushButton("➕ 添加")
-        self.add_btn.setObjectName("Secondary")
-        self.add_btn.clicked.connect(self._on_add)
-        header_layout.addWidget(self.add_btn)
-
-        self.import_btn = QPushButton("📥 导入")
-        self.import_btn.setObjectName("Secondary")
-        self.import_btn.clicked.connect(self._on_import)
-        header_layout.addWidget(self.import_btn)
-
-        self.export_btn = QPushButton("📤 导出")
+        # Action Buttons
+        self.export_btn = QPushButton("导出")
         self.export_btn.setObjectName("Secondary")
+        self.export_btn.setCursor(Qt.PointingHandCursor)
         self.export_btn.clicked.connect(self._on_export)
         header_layout.addWidget(self.export_btn)
 
+        self.import_btn = QPushButton("批量导入")
+        self.import_btn.setObjectName("Secondary")
+        self.import_btn.setCursor(Qt.PointingHandCursor)
+        self.import_btn.clicked.connect(self._on_import)
+        header_layout.addWidget(self.import_btn)
+
+        self.add_btn = QPushButton("添加话术")
+        self.add_btn.setObjectName("Primary")
+        self.add_btn.setCursor(Qt.PointingHandCursor)
+        self.add_btn.clicked.connect(self._on_add)
+        header_layout.addWidget(self.add_btn)
+
         layout.addLayout(header_layout)
 
-        # 统计信息
+        # --- Content Area ---
+        content_card = QFrame()
+        content_card.setObjectName("TableCard")
+        content_layout = QVBoxLayout(content_card)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        # Toolbar inside card
+        toolbar = QFrame()
+        toolbar.setStyleSheet("border-bottom: 1px solid #e2e8f0; background: #f8fafc; border-top-left-radius: 16px; border-top-right-radius: 16px;")
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(16, 12, 16, 12)
+        
+        # Search Box
+        search_wrap = QWidget()
+        search_wrap.setObjectName("SearchBox")
+        search_wrap.setMaximumWidth(400)
+        search_layout = QHBoxLayout(search_wrap)
+        search_layout.setContentsMargins(12, 6, 12, 6)
+        
+        search_icon = QLabel("🔍")
+        search_icon.setStyleSheet("color: #94a3b8; font-size: 14px;")
+        search_layout.addWidget(search_icon)
+        
+        self.search_input = QLineEdit()
+        self.search_input.setObjectName("SearchInput")
+        self.search_input.setPlaceholderText("搜索关键词、标签或问题...")
+        self.search_input.textChanged.connect(self._on_search)
+        search_layout.addWidget(self.search_input)
+        
+        toolbar_layout.addWidget(search_wrap)
+        toolbar_layout.addStretch()
+        
         self.stats_label = QLabel("共 0 条")
         self.stats_label.setObjectName("MutedText")
-        layout.addWidget(self.stats_label)
+        toolbar_layout.addWidget(self.stats_label)
 
-        # 表格
+        content_layout.addWidget(toolbar)
+
+        # Table
         self.table = QTableWidget()
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(["分类", "标签", "问题", "答案", "操作"])
 
-        header_category = QTableWidgetItem("分类")
-        header_category.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.table.setHorizontalHeaderItem(0, header_category)
-
-        header_tags = QTableWidgetItem("标签")
-        header_tags.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.table.setHorizontalHeaderItem(1, header_tags)
-
-        header_question = QTableWidgetItem("问题")
-        header_question.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.table.setHorizontalHeaderItem(2, header_question)
-
-        header_answer = QTableWidgetItem("答案")
-        header_answer.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.table.setHorizontalHeaderItem(3, header_answer)
-
-        header_action = QTableWidgetItem("操作")
-        header_action.setTextAlignment(Qt.AlignCenter)
-        self.table.setHorizontalHeaderItem(4, header_action)
-
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.table.horizontalHeader().setDefaultSectionSize(150)
+        # Setup header
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        
         self.table.setColumnWidth(0, 120)
         self.table.setColumnWidth(1, 180)
-        self.table.setColumnWidth(4, 220)
+        self.table.setColumnWidth(4, 180)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(52)
+        self.table.verticalHeader().setDefaultSectionSize(60)
+
+        # Custom Table Style
         self.table.setStyleSheet("""
             QTableWidget {
-                alternate-background-color: #f2e9da;
+                background: #ffffff;
+                border: none;
+                gridline-color: transparent;
+            }
+            QTableWidget::item {    
+                padding: 12px 16px;
+                border-bottom: 1px solid #f1f5f9;
+            }
+            QHeaderView::section {
+                background: #ffffff;
+                color: #f97316;
+                font-size: 13px;
+                font-weight: 700;
+                border: none;
+                border-bottom: 2px solid #f1f5f9;
+                padding: 12px 16px;
             }
         """)
-        layout.addWidget(self.table, 1)
+
+        content_layout.addWidget(self.table)
+
+        layout.addWidget(content_card)
 
     def _load_data(self):
         """加载数据到表格"""
@@ -216,57 +257,86 @@ class KnowledgeTab(QWidget):
 
         for i, item in enumerate(items):
             # 分类
-            category_item = QTableWidgetItem(item.category or "-")
-            category_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            category_item.setToolTip(item.category or "-")
-            self.table.setItem(i, 0, category_item)
+            cat_widget = QWidget()
+            cat_layout = QHBoxLayout(cat_widget)
+            cat_layout.setContentsMargins(8, 0, 8, 0)
+            cat_label = QLabel(item.category or "未分类")
+            cat_label.setStyleSheet("""
+                background: #eff6ff; color: #2563eb; 
+                padding: 4px 8px; border-radius: 6px; 
+                font-size: 11px; font-weight: 600;
+            """)
+            cat_layout.addWidget(cat_label)
+            cat_layout.addStretch()
+            self.table.setCellWidget(i, 0, cat_widget)
 
             # 标签
-            tags_text = "、".join(item.tags) if item.tags else "-"
-            tags_item = QTableWidgetItem(tags_text)
-            tags_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            tags_item.setToolTip(tags_text)
-            self.table.setItem(i, 1, tags_item)
+            tags_widget = QWidget()
+            tags_layout = QHBoxLayout(tags_widget)
+            tags_layout.setContentsMargins(8, 0, 8, 0)
+            tags_layout.setSpacing(4)
+            for tag in (item.tags[:2] if item.tags else []):
+                t_label = QLabel(tag)
+                t_label.setStyleSheet("""
+                    background: #f1f5f9; color: #64748b;
+                    padding: 2px 6px; border-radius: 4px;
+                    font-size: 10px;
+                """)
+                tags_layout.addWidget(t_label)
+            if item.tags and len(item.tags) > 2:
+                more = QLabel(f"+{len(item.tags)-2}")
+                more.setStyleSheet("color: #94a3b8; font-size: 10px;")
+                tags_layout.addWidget(more)
+            tags_layout.addStretch()
+            self.table.setCellWidget(i, 1, tags_widget)
 
             # 问题
-            question_item = QTableWidgetItem(item.question)
-            question_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            question_item.setData(Qt.ItemDataRole.UserRole, item.id)
-            question_item.setToolTip(item.question)
-            self.table.setItem(i, 2, question_item)
+            q_item = QTableWidgetItem(item.question)
+            q_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            q_item.setToolTip(item.question)
+            font = q_item.font()
+            font.setBold(True)
+            q_item.setFont(font)
+            self.table.setItem(i, 2, q_item)
 
             # 答案
-            answer_item = QTableWidgetItem(item.answer)
-            answer_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            answer_item.setToolTip(item.answer)
-            self.table.setItem(i, 3, answer_item)
+            a_item = QTableWidgetItem(item.answer)
+            a_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            a_item.setToolTip(item.answer)
+            self.table.setItem(i, 3, a_item)
 
             # 操作按钮
             btn_widget = QWidget()
             btn_layout = QHBoxLayout(btn_widget)
-            btn_layout.setContentsMargins(4, 4, 4, 4)
+            btn_layout.setContentsMargins(0, 0, 16, 0)
             btn_layout.setSpacing(8)
-            btn_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            btn_layout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-            edit_btn = QPushButton("✏️ 编辑")
-            edit_btn.setFixedWidth(70)
-            edit_btn.setMinimumHeight(30)
-            edit_btn.setObjectName("Ghost")
-            edit_btn.setProperty("item_id", item.id)
+            edit_btn = QPushButton("✍️")
+            edit_btn.setFixedSize(32, 32)
+            edit_btn.setCursor(Qt.PointingHandCursor)
+            edit_btn.setStyleSheet("""
+                QPushButton { background: transparent; border: none; font-size: 16px; }
+                QPushButton:hover { background: #eff6ff; border-radius: 6px; }
+            """)
+            edit_btn.setToolTip("编辑")
             edit_btn.clicked.connect(lambda checked, id=item.id: self._on_edit(id))
             btn_layout.addWidget(edit_btn)
 
-            delete_btn = QPushButton("🗑️ 删除")
-            delete_btn.setFixedWidth(70)
-            delete_btn.setMinimumHeight(30)
-            delete_btn.setObjectName("GhostDanger")
-            delete_btn.setProperty("item_id", item.id)
+            delete_btn = QPushButton("🗑️")
+            delete_btn.setFixedSize(32, 32)
+            delete_btn.setCursor(Qt.PointingHandCursor)
+            delete_btn.setStyleSheet("""
+                QPushButton { background: transparent; border: none; font-size: 16px; }
+                QPushButton:hover { background: #fee2e2; border-radius: 6px; }
+            """)
+            delete_btn.setToolTip("删除")
             delete_btn.clicked.connect(lambda checked, id=item.id: self._on_delete(id))
             btn_layout.addWidget(delete_btn)
 
             self.table.setCellWidget(i, 4, btn_widget)
 
-        self.stats_label.setText(f"共 {len(items)} 条")
+        self.stats_label.setText(f"共 {len(items)} 条数据")
 
     def _on_search(self, text: str):
         """搜索"""

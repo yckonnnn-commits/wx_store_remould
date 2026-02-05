@@ -9,10 +9,9 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QMessageBox, QFileDialog,
-    QAbstractItemView, QProgressBar, QCheckBox, QToolBar,
-    QSplitter, QGroupBox, QGridLayout, QScrollArea, QFrame
+    QAbstractItemView, QProgressBar, QSplitter, QFrame
 )
-from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtCore import Qt, Signal, QThread, QSize
 from PySide6.QtGui import QPixmap, QIcon
 
 
@@ -38,7 +37,7 @@ class ImageLoadWorker(QThread):
                 pixmap = QPixmap(path)
                 if not pixmap.isNull():
                     # 缩放图片以适应显示
-                    scaled_pixmap = pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    scaled_pixmap = pixmap.scaled(180, 220, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     self.image_loaded.emit(path, scaled_pixmap)
             except Exception:
                 pass
@@ -58,11 +57,32 @@ class ImageListWidget(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setViewMode(QListWidget.IconMode)
-        self.setIconSize(QPixmap(200, 200).size())
+        self.setIconSize(QSize(180, 220))
+        self.setGridSize(QSize(190, 260))
         self.setResizeMode(QListWidget.Adjust)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.setSpacing(10)
+        self.setSpacing(12)
         self.setDragEnabled(False)
+        self.setStyleSheet("""
+            QListWidget {
+                background: transparent;
+                border: none;
+                outline: none;
+            }
+            QListWidget::item {
+                background: #ffffff;
+                border: 1px solid #e2e8f0;
+                border-radius: 12px;
+                padding: 4px;
+            }
+            QListWidget::item:selected {
+                background: #eff6ff;
+                border: 2px solid #3b82f6;
+            }
+            QListWidget::item:hover {
+                border-color: #cbd5e1;
+            }
+        """)
 
 
 class ImageManagementTab(QWidget):
@@ -86,78 +106,101 @@ class ImageManagementTab(QWidget):
     def _setup_ui(self):
         """设置UI"""
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-        
-        # 工具栏
-        toolbar = self._create_toolbar()
-        layout.addWidget(toolbar)
+        layout.setContentsMargins(32, 32, 32, 32)
+        layout.setSpacing(24)
+
+        # 顶部标题与操作
+        header = self._create_header()
+        layout.addWidget(header)
         
         # 主要内容区域
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(16)
         
         # 左侧图片列表
         left_panel = self._create_image_panel()
+        left_panel.setMinimumWidth(500)
         splitter.addWidget(left_panel)
         
         # 右侧预览面板
         right_panel = self._create_preview_panel()
+        right_panel.setMinimumWidth(300)
+        right_panel.setMaximumWidth(450)
         splitter.addWidget(right_panel)
         
-        splitter.setSizes([400, 300])
-        layout.addWidget(splitter)
+        splitter.setSizes([800, 350])
+        layout.addWidget(splitter, 1)
         
         # 底部状态栏
         status_layout = QHBoxLayout()
         self.status_label = QLabel("就绪")
+        self.status_label.setObjectName("MutedText")
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
+        self.progress_bar.setFixedWidth(200)
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.progress_bar)
         status_layout.addStretch()
         layout.addLayout(status_layout)
     
-    def _create_toolbar(self):
-        """创建工具栏"""
-        toolbar = QToolBar()
-        
-        # 上传图片按钮
-        self.upload_btn = QPushButton("📤 上传图片")
-        self.upload_btn.clicked.connect(self._upload_images)
-        toolbar.addWidget(self.upload_btn)
-        
-        toolbar.addSeparator()
-        
-        # 全选/反选
+    def _create_header(self):
+        """创建顶部标题与操作区"""
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+
+        title_wrap = QVBoxLayout()
+        title = QLabel("图片素材库")
+        title.setObjectName("PageTitle")
+        title_wrap.addWidget(title)
+        subtitle = QLabel("管理 AI 客服在对话中使用的商品图片与素材")
+        subtitle.setObjectName("PageSubtitle")
+        title_wrap.addWidget(subtitle)
+        header_layout.addLayout(title_wrap)
+
+        header_layout.addStretch()
+
         self.select_all_btn = QPushButton("全选")
+        self.select_all_btn.setObjectName("Secondary")
+        self.select_all_btn.setCursor(Qt.PointingHandCursor)
         self.select_all_btn.clicked.connect(self._select_all)
-        toolbar.addWidget(self.select_all_btn)
-        
+        header_layout.addWidget(self.select_all_btn)
+
         self.deselect_all_btn = QPushButton("取消选择")
+        self.deselect_all_btn.setObjectName("Secondary")
+        self.deselect_all_btn.setCursor(Qt.PointingHandCursor)
         self.deselect_all_btn.clicked.connect(self._deselect_all)
-        toolbar.addWidget(self.deselect_all_btn)
-        
-        toolbar.addSeparator()
-        
-        # 批量删除按钮
-        self.delete_btn = QPushButton("🗑️ 批量删除")
+        header_layout.addWidget(self.deselect_all_btn)
+
+        self.delete_btn = QPushButton("批量删除")
+        self.delete_btn.setObjectName("Danger")
+        self.delete_btn.setCursor(Qt.PointingHandCursor)
         self.delete_btn.clicked.connect(self._batch_delete)
-        self.delete_btn.setStyleSheet("QPushButton { background-color: #ff4444; color: white; }")
-        toolbar.addWidget(self.delete_btn)
-        
-        toolbar.addSeparator()
-        
-        # 刷新按钮
-        self.refresh_btn = QPushButton("🔄 刷新")
+        header_layout.addWidget(self.delete_btn)
+
+        self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn.setObjectName("Secondary")
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
         self.refresh_btn.clicked.connect(self._load_images)
-        toolbar.addWidget(self.refresh_btn)
-        
-        return toolbar
+        header_layout.addWidget(self.refresh_btn)
+
+        self.upload_btn = QPushButton("上传新图片")
+        self.upload_btn.setObjectName("Primary")
+        self.upload_btn.setCursor(Qt.PointingHandCursor)
+        self.upload_btn.clicked.connect(self._upload_images)
+        header_layout.addWidget(self.upload_btn)
+
+        return header
     
     def _create_image_panel(self):
         """创建图片列表面板"""
-        group = QGroupBox("图片列表")
+        group = QFrame()
+        group.setStyleSheet("background: transparent; border: none;") # Container itself invisible
         layout = QVBoxLayout(group)
-        
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
         # 图片列表
         self.image_list = ImageListWidget()
         self.image_list.itemSelectionChanged.connect(self._on_selection_changed)
@@ -168,20 +211,39 @@ class ImageManagementTab(QWidget):
     
     def _create_preview_panel(self):
         """创建预览面板"""
-        group = QGroupBox("预览")
+        group = QFrame()
+        group.setObjectName("Card")
         layout = QVBoxLayout(group)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(20)
+
+        header_row = QHBoxLayout()
+        title = QLabel("素材预览")
+        title.setStyleSheet("font-weight: 700; font-size: 13px; color: #475569; text-transform: uppercase;")
+        header_row.addWidget(title)
+        header_row.addStretch()
+        layout.addLayout(header_row)
         
         # 预览区域
+        preview_container = QFrame()
+        preview_container.setStyleSheet("background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;")
+        preview_layout = QVBoxLayout(preview_container)
+        
         self.preview_label = QLabel("选择图片进行预览")
         self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setMinimumSize(300, 300)
-        self.preview_label.setStyleSheet("QLabel { border: 1px solid #ccc; background-color: #f9f9f9; }")
-        layout.addWidget(self.preview_label)
+        self.preview_label.setMinimumSize(250, 250)
+        self.preview_label.setStyleSheet("border: none; color: #94a3b8;")
+        preview_layout.addWidget(self.preview_label)
+        
+        layout.addWidget(preview_container)
         
         # 图片信息
         self.info_label = QLabel("")
         self.info_label.setWordWrap(True)
+        self.info_label.setStyleSheet("color: #334155; font-size: 13px; line-height: 1.5;")
         layout.addWidget(self.info_label)
+        
+        layout.addStretch()
         
         return group
     

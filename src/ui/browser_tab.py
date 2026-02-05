@@ -5,12 +5,11 @@
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
-    QPushButton, QProgressBar
+    QPushButton, QProgressBar, QFrame, QLabel
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
-from PySide6.QtCore import QUrl, Qt
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QUrl, Qt, Signal
 
 
 class BrowserTab(QWidget):
@@ -27,71 +26,110 @@ class BrowserTab(QWidget):
     def _setup_ui(self):
         """设置UI"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0) # No margin for full browser feel
+        layout.setSpacing(0)
+        
+        # Container with margin to simulate the "floating" window inside content area
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(24, 24, 24, 24)
+        container_layout.setSpacing(0)
 
-        # 导航栏
-        nav_layout = QHBoxLayout()
-        nav_layout.setSpacing(8)
+        # Browser Chrome (Header)
+        nav_bar = QFrame()
+        nav_bar.setObjectName("BrowserBar")
+        nav_bar.setFixedHeight(50)
+        nav_layout = QHBoxLayout(nav_bar)
+        nav_layout.setContentsMargins(16, 0, 16, 0)
+        nav_layout.setSpacing(12)
 
-        # URL输入框
+        # Traffic Lights
+        dot_wrap = QWidget()
+        dot_layout = QHBoxLayout(dot_wrap)
+        dot_layout.setContentsMargins(0, 0, 0, 0)
+        dot_layout.setSpacing(8)
+        for color in ("#f87171", "#facc15", "#4ade80"):
+            dot = QFrame()
+            dot.setFixedSize(10, 10)
+            dot.setStyleSheet(f"background: {color}; border-radius: 5px;")
+            dot_layout.addWidget(dot)
+        nav_layout.addWidget(dot_wrap)
+        
+        # URL Display (Read-onlyish style)
+        url_box = QFrame()
+        url_box.setStyleSheet("background: #f1f5f9; border-radius: 8px; padding: 4px 12px;")
+        url_layout = QHBoxLayout(url_box)
+        url_layout.setContentsMargins(0, 0, 0, 0)
+        url_layout.setSpacing(8)
+        
+        lock_icon = QLabel("🔒")
+        lock_icon.setStyleSheet("color: #64748b; font-size: 10px;")
+        url_layout.addWidget(lock_icon)
+        
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("输入网址...")
+        self.url_input.setObjectName("AddressInput")
+        self.url_input.setPlaceholderText("https://store.weixin.qq.com/shop/kf")
+        self.url_input.setStyleSheet("background: transparent; border: none; padding: 0;")
         self.url_input.returnPressed.connect(self._on_navigate)
-        nav_layout.addWidget(self.url_input, 1)
+        url_layout.addWidget(self.url_input, 1)
+        
+        nav_layout.addWidget(url_box, 1)
 
-        # 导航按钮
+        # Actions
         self.back_btn = QPushButton("◀")
-        self.back_btn.setFixedWidth(40)
-        self.back_btn.setObjectName("Ghost")
+        self.back_btn.setObjectName("IconButton")
+        self.back_btn.setFixedSize(28, 28)
         self.back_btn.clicked.connect(self._on_back)
         nav_layout.addWidget(self.back_btn)
 
-        self.forward_btn = QPushButton("▶")
-        self.forward_btn.setFixedWidth(40)
-        self.forward_btn.setObjectName("Ghost")
-        self.forward_btn.clicked.connect(self._on_forward)
-        nav_layout.addWidget(self.forward_btn)
-
-        self.refresh_btn = QPushButton("🔄")
-        self.refresh_btn.setFixedWidth(50)
-        self.refresh_btn.setObjectName("Ghost")
+        self.refresh_btn = QPushButton("↻")
+        self.refresh_btn.setObjectName("IconButton")
+        self.refresh_btn.setFixedSize(28, 28)
         self.refresh_btn.clicked.connect(self._on_refresh)
         nav_layout.addWidget(self.refresh_btn)
 
-        self.go_btn = QPushButton("前往")
-        self.go_btn.setFixedWidth(60)
-        self.go_btn.setObjectName("Primary")
-        self.go_btn.clicked.connect(self._on_navigate)
-        nav_layout.addWidget(self.go_btn)
+        container_layout.addWidget(nav_bar)
 
-        layout.addLayout(nav_layout)
-
-        # 进度条
+        # Progress
         self.progress_bar = QProgressBar()
-        self.progress_bar.setMaximumHeight(3)
+        self.progress_bar.setMaximumHeight(2)
         self.progress_bar.setTextVisible(False)
-        layout.addWidget(self.progress_bar)
+        self.progress_bar.setStyleSheet("QProgressBar { background: transparent; border: none; } QProgressBar::chunk { background: #3b82f6; }")
+        container_layout.addWidget(self.progress_bar)
 
-        # 浏览器视图
+        # Web View Frame
+        view_card = QFrame()
+        view_card.setObjectName("BrowserViewCard")
+        # Remove top border radius/border since header is attached
+        view_card.setStyleSheet(""" 
+            QFrame#BrowserViewCard {
+                border-top-left-radius: 0;
+                border-top-right-radius: 0;
+                border-top: none;
+            }
+        """)
+        view_layout = QVBoxLayout(view_card)
+        view_layout.setContentsMargins(0, 0, 0, 0)
+        
         self.web_view = QWebEngineView()
-
-        # 配置浏览器设置
+        
         settings = self.web_view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)
 
-        layout.addWidget(self.web_view, 1)
+        view_layout.addWidget(self.web_view)
+        
+        container_layout.addWidget(view_card, 1)
+        layout.addWidget(container)
 
-        # 连接信号
+        # Connect signals
         self.web_view.loadProgress.connect(self._on_load_progress)
         self.web_view.loadFinished.connect(self._on_load_finished)
         self.web_view.urlChanged.connect(self._on_url_changed)
 
     def _on_navigate(self):
-        """导航到指定URL"""
         url = self.url_input.text().strip()
         if url:
             if not url.startswith(("http://", "https://")):
@@ -99,61 +137,41 @@ class BrowserTab(QWidget):
             self.load_url(url)
 
     def _on_back(self):
-        """后退"""
         self.web_view.back()
 
-    def _on_forward(self):
-        """前进"""
-        self.web_view.forward()
-
     def _on_refresh(self):
-        """刷新"""
         self.web_view.reload()
 
     def _on_load_progress(self, progress: int):
-        """加载进度"""
         self.progress_bar.setValue(progress)
         self.load_progress.emit(progress)
 
     def _on_load_finished(self, success: bool):
-        """加载完成"""
         self.progress_bar.setValue(100 if success else 0)
+        if success:
+            # Hide progress bar after delay? For now just keep it full or 0
+            self.progress_bar.setValue(0) 
         self.load_finished.emit(success)
 
     def _on_url_changed(self, url: QUrl):
-        """URL变更"""
         url_str = url.toString()
         self.url_input.setText(url_str)
         self.url_changed.emit(url_str)
 
     def load_url(self, url: str):
-        """加载指定URL"""
         self.web_view.setUrl(QUrl(url))
 
     def get_web_view(self) -> QWebEngineView:
-        """获取浏览器视图"""
         return self.web_view
 
     def get_current_url(self) -> str:
-        """获取当前URL"""
         return self.web_view.url().toString()
 
     def run_javascript(self, script: str, callback=None):
-        """执行JavaScript"""
         self.web_view.page().runJavaScript(script, callback)
 
-    def go_back(self):
-        """后退"""
-        self.web_view.back()
-
-    def go_forward(self):
-        """前进"""
-        self.web_view.forward()
-
     def reload(self):
-        """刷新页面"""
         self.web_view.reload()
 
     def stop(self):
-        """停止加载"""
         self.web_view.stop()
