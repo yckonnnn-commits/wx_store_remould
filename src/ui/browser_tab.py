@@ -8,8 +8,23 @@ from PySide6.QtWidgets import (
     QPushButton, QProgressBar, QFrame, QLabel
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
 from PySide6.QtCore import QUrl, Qt, Signal
+
+
+class CustomWebEnginePage(QWebEnginePage):
+    """支持预设文件上传的 WebEnginePage"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.next_file_selection = []
+
+    def chooseFiles(self, mode, old_files, accepted_mime_types):
+        if self.next_file_selection:
+            files = self.next_file_selection
+            self.next_file_selection = []
+            return files
+        return super().chooseFiles(mode, old_files, accepted_mime_types)
 
 
 class BrowserTab(QWidget):
@@ -112,6 +127,7 @@ class BrowserTab(QWidget):
         view_layout.setContentsMargins(0, 0, 0, 0)
         
         self.web_view = QWebEngineView()
+        self.web_view.setPage(CustomWebEnginePage(self.web_view))
         
         settings = self.web_view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)

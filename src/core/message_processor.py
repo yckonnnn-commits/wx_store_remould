@@ -4,6 +4,8 @@
 """
 
 import json
+import random
+from pathlib import Path
 from typing import Callable, Optional
 from PySide6.QtCore import QObject, Signal, QTimer
 
@@ -265,6 +267,10 @@ class MessageProcessor(QObject):
 
     def _generate_and_send_reply(self, user_name: str, user_message: str):
         """生成并发送回复 - 使用大模型"""
+        # 精准关键词：地址在哪里 -> 直接发送图片
+        if self._handle_exact_address_image_reply(user_name, user_message):
+            return
+
         # 获取或创建会话
         session = self.sessions.get_or_create_session(
             session_id=f"user_{hash(user_name)}",
@@ -311,6 +317,45 @@ class MessageProcessor(QObject):
             QTimer.singleShot(2000, self._reset_poll_state)
 
         self.browser.send_message(reply_text, on_sent)
+
+    def _send_image(self, image_path: str):
+        """发送图片"""
+        def on_sent(success, result):
+            if success:
+                self.log_message.emit(f"🖼️ 图片已触发发送: {Path(image_path).name}")
+            else:
+                self.log_message.emit(f"❌ 图片发送失败: {result}")
+            QTimer.singleShot(2000, self._reset_poll_state)
+
+        self.browser.send_image(image_path, on_sent)
+
+    def _handle_exact_address_image_reply(self, user_name: str, user_message: str) -> bool:
+        """当用户精准输入“地址在哪里”时随机发送图片，跳过大模型"""
+        if not user_message:
+            return False
+        if user_message.strip() != "地址在哪里":
+            return False
+
+        image_path = self._pick_random_image()
+        if not image_path:
+            self.log_message.emit("⚠️ 未找到可发送的图片，改为调用大模型")
+            return False
+
+        self.log_message.emit("🖼️ 触发地址关键词，随机发送图片，跳过大模型")
+        self._send_image(image_path)
+        return True
+
+    def _pick_random_image(self) -> Optional[str]:
+        """从图片库中随机选择一张图片"""
+        image_dir = Path("images")
+        if not image_dir.exists():
+            return None
+
+        exts = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff"}
+        candidates = [p for p in image_dir.iterdir() if p.is_file() and p.suffix.lower() in exts]
+        if not candidates:
+            return None
+        return str(random.choice(candidates).resolve())
 
     def _reset_poll_state(self):
         """重置轮询状态"""
@@ -383,6 +428,8 @@ class MessageProcessor(QObject):
                     # 提取最新的用户消息
                     latest_user_msg = user_messages[-1].get("text", "")
                     if latest_user_msg:
+                        if self._handle_exact_address_image_reply(user_name, latest_user_msg):
+                            return
                         self.log_message.emit(f"🤖 准备调用大模型生成回复...")
                         self._generate_reply_from_history(user_name, messages, latest_user_msg)
                 

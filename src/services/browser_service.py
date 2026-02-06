@@ -734,6 +734,111 @@ class BrowserService(QObject):
         else:
             self.page.runJavaScript(script)
 
+    def send_image(self, image_path: str, callback: Callable = None):
+        """发送图片（通过触发文件上传）"""
+        from pathlib import Path
+        if not image_path or not Path(image_path).exists():
+            if callback:
+                callback(False, {"error": "图片路径不存在"})
+            return
+
+        # 预设文件选择（CustomWebEnginePage 支持）
+        if hasattr(self.page, "next_file_selection"):
+            self.page.next_file_selection = [str(Path(image_path).resolve())]
+
+        script = r"""
+        (function() {
+            function sleep(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
+            function isVisible(el) {
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 5 || rect.height < 5) return false;
+                return true;
+            }
+            function findFileInput() {
+                var inputs = Array.from(document.querySelectorAll('input[type="file"]')).filter(isVisible);
+                if (inputs.length) return inputs[0];
+                return null;
+            }
+            function clickImageButton() {
+                var selectors = [
+                    'button[aria-label*="图片"]',
+                    'button[title*="图片"]',
+                    'button[aria-label*="相册"]',
+                    'button[title*="相册"]'
+                ];
+                for (var i = 0; i < selectors.length; i++) {
+                    var el = document.querySelector(selectors[i]);
+                    if (el && isVisible(el)) { el.click(); return true; }
+                }
+
+                var keys = ['图片','相册','photo','image'];
+                var candidates = Array.from(document.querySelectorAll('button,div,span,a')).filter(isVisible);
+                for (var j = 0; j < candidates.length; j++) {
+                    var t = (candidates[j].textContent || '').trim();
+                    if (!t) continue;
+                    for (var k = 0; k < keys.length; k++) {
+                        if (t.indexOf(keys[k]) !== -1) {
+                            candidates[j].click();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+
+            function clickSendInDialog() {
+                var btns = Array.from(document.querySelectorAll('button')).filter(isVisible);
+                for (var i = 0; i < btns.length; i++) {
+                    var t = (btns[i].textContent || '').trim();
+                    if (t.indexOf('发送') !== -1) {
+                        btns[i].click();
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            async function run() {
+                var input = findFileInput();
+                if (!input) {
+                    var clicked = clickImageButton();
+                    if (!clicked) {
+                        return { success: false, error: '未找到图片按钮' };
+                    }
+                    await sleep(200);
+                    input = findFileInput();
+                }
+
+                if (input) {
+                    input.click();
+                } else {
+                    return { success: false, error: '未找到文件输入框' };
+                }
+
+                // 等待上传弹窗出现并点击“发送”
+                for (var i = 0; i < 12; i++) {
+                    await sleep(250);
+                    if (clickSendInDialog()) {
+                        return { success: true, method: 'dialog_send' };
+                    }
+                }
+
+                return { success: false, error: '未找到发送按钮' };
+            }
+
+            return run().then(function(res){ return JSON.stringify(res); });
+        })()
+        """
+
+        if callback:
+            self.run_javascript(script, callback)
+        else:
+            self.page.runJavaScript(script)
+
     def get_page_url(self) -> str:
         """获取当前页面URL"""
         return self.web_view.url().toString()
