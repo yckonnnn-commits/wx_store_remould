@@ -322,18 +322,44 @@ class MessageProcessor(QObject):
         """发送图片"""
         def on_sent(success, result):
             if success:
-                self.log_message.emit(f"🖼️ 图片已触发发送: {Path(image_path).name}")
+                # 详细记录发送结果
+                if isinstance(result, dict):
+                    # 显示所有关键信息
+                    send_method = result.get('sendMethod', result.get('method', 'unknown'))
+                    trigger_method = result.get('triggerMethod', 'unknown')
+                    step = result.get('step', '?')
+                    btn_text = result.get('buttonText', '')
+                    send_pos = result.get('sendPosition', {})
+                    
+                    log_parts = [f"step={step}", f"sendMethod={send_method}"]
+                    if trigger_method != 'unknown':
+                        log_parts.append(f"triggerMethod={trigger_method}")
+                    if btn_text:
+                        log_parts.append(f"buttonText={btn_text}")
+                    if send_pos:
+                        log_parts.append(f"pos=({send_pos.get('x', 0):.0f},{send_pos.get('y', 0):.0f})")
+                    
+                    self.log_message.emit(f"🖼️ 图片发送结果: {', '.join(log_parts)}")
+                else:
+                    self.log_message.emit(f"🖼️ 图片发送结果: {result}")
             else:
-                self.log_message.emit(f"❌ 图片发送失败: {result}")
+                # 详细记录失败原因
+                if isinstance(result, dict):
+                    error = result.get('error', 'unknown')
+                    step = result.get('step', '?')
+                    trigger_method = result.get('triggerMethod', '')
+                    self.log_message.emit(f"❌ 图片发送失败: error={error}, step={step}, trigger={trigger_method}")
+                else:
+                    self.log_message.emit(f"❌ 图片发送失败: {result}")
             QTimer.singleShot(2000, self._reset_poll_state)
 
         self.browser.send_image(image_path, on_sent)
 
     def _handle_exact_address_image_reply(self, user_name: str, user_message: str) -> bool:
-        """当用户精准输入“地址在哪里”时随机发送图片，跳过大模型"""
+        """当用户精准输入"您确定了吧"时随机发送图片，跳过大模型"""
         if not user_message:
             return False
-        if user_message.strip() != "地址在哪里":
+        if user_message.strip() != "您确定了吧":
             return False
 
         image_path = self._pick_random_image()
@@ -341,7 +367,7 @@ class MessageProcessor(QObject):
             self.log_message.emit("⚠️ 未找到可发送的图片，改为调用大模型")
             return False
 
-        self.log_message.emit("🖼️ 触发地址关键词，随机发送图片，跳过大模型")
+        self.log_message.emit("🖼️ 触发问候关键词，随机发送图片，跳过大模型")
         self._send_image(image_path)
         return True
 

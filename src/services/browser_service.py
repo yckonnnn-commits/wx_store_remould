@@ -5,7 +5,8 @@
 
 import json
 from typing import Callable, Optional
-from PySide6.QtCore import QObject, Signal, QTimer
+from PySide6.QtCore import QObject, Signal, QTimer, Qt, QCoreApplication
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
 from PySide6.QtCore import QUrl
@@ -735,8 +736,11 @@ class BrowserService(QObject):
             self.page.runJavaScript(script)
 
     def send_image(self, image_path: str, callback: Callable = None):
-        """发送图片（通过触发文件上传）"""
+        """发送图片 - 使用 Qt 原生鼠标点击和键盘事件"""
         from pathlib import Path
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtCore import QPointF
+        
         if not image_path or not Path(image_path).exists():
             if callback:
                 callback(False, {"error": "图片路径不存在"})
@@ -746,98 +750,141 @@ class BrowserService(QObject):
         if hasattr(self.page, "next_file_selection"):
             self.page.next_file_selection = [str(Path(image_path).resolve())]
 
-        script = r"""
+        # Step 1: 获取图片按钮的位置
+        get_position_script = r"""
         (function() {
-            function sleep(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
-            function isVisible(el) {
-                if (!el) return false;
-                var style = window.getComputedStyle(el);
-                if (!style) return false;
-                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-                var rect = el.getBoundingClientRect();
-                if (!rect || rect.width < 5 || rect.height < 5) return false;
-                return true;
+            // 查找图片按钮 div[title="图片"]
+            var imgDiv = document.querySelector('div[title="图片"]');
+            if (imgDiv) {
+                var rect = imgDiv.getBoundingClientRect();
+                return JSON.stringify({ 
+                    found: true, 
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2,
+                    method: 'div_title'
+                });
             }
-            function findFileInput() {
-                var inputs = Array.from(document.querySelectorAll('input[type="file"]')).filter(isVisible);
-                if (inputs.length) return inputs[0];
-                return null;
+            
+            // 备选：查找 input#file1 的父元素
+            var fileInput = document.getElementById('file1');
+            if (fileInput && fileInput.parentElement) {
+                var rect = fileInput.parentElement.getBoundingClientRect();
+                return JSON.stringify({ 
+                    found: true, 
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2,
+                    method: 'file1_parent'
+                });
             }
-            function clickImageButton() {
-                var selectors = [
-                    'button[aria-label*="图片"]',
-                    'button[title*="图片"]',
-                    'button[aria-label*="相册"]',
-                    'button[title*="相册"]'
-                ];
-                for (var i = 0; i < selectors.length; i++) {
-                    var el = document.querySelector(selectors[i]);
-                    if (el && isVisible(el)) { el.click(); return true; }
-                }
-
-                var keys = ['图片','相册','photo','image'];
-                var candidates = Array.from(document.querySelectorAll('button,div,span,a')).filter(isVisible);
-                for (var j = 0; j < candidates.length; j++) {
-                    var t = (candidates[j].textContent || '').trim();
-                    if (!t) continue;
-                    for (var k = 0; k < keys.length; k++) {
-                        if (t.indexOf(keys[k]) !== -1) {
-                            candidates[j].click();
-                            return true;
-                        }
-                    }
-                }
-                return false;
-            }
-
-            function clickSendInDialog() {
-                var btns = Array.from(document.querySelectorAll('button')).filter(isVisible);
-                for (var i = 0; i < btns.length; i++) {
-                    var t = (btns[i].textContent || '').trim();
-                    if (t.indexOf('发送') !== -1) {
-                        btns[i].click();
-                        return true;
-                    }
-                }
-                return false;
-            }
-
-            async function run() {
-                var input = findFileInput();
-                if (!input) {
-                    var clicked = clickImageButton();
-                    if (!clicked) {
-                        return { success: false, error: '未找到图片按钮' };
-                    }
-                    await sleep(200);
-                    input = findFileInput();
-                }
-
-                if (input) {
-                    input.click();
-                } else {
-                    return { success: false, error: '未找到文件输入框' };
-                }
-
-                // 等待上传弹窗出现并点击“发送”
-                for (var i = 0; i < 12; i++) {
-                    await sleep(250);
-                    if (clickSendInDialog()) {
-                        return { success: true, method: 'dialog_send' };
-                    }
-                }
-
-                return { success: false, error: '未找到发送按钮' };
-            }
-
-            return run().then(function(res){ return JSON.stringify(res); });
+            
+            return JSON.stringify({ found: false, error: '未找到图片按钮' });
         })()
         """
 
-        if callback:
-            self.run_javascript(script, callback)
-        else:
-            self.page.runJavaScript(script)
+        def on_position_result(success, result):
+            if not success:
+                if callback:
+                    callback(False, {"error": "获取按钮位置失败", "detail": str(result)})
+                return
+            
+            # 解析结果
+            pos_data = result if isinstance(result, dict) else {}
+            if isinstance(result, str):
+                try:
+                    import json as json_mod
+                    pos_data = json_mod.loads(result)
+                except:
+                    pass
+            
+            if not pos_data.get("found"):
+                if callback:
+                    callback(False, {"error": pos_data.get("error", "未找到图片按钮"), "step": 1})
+                return
+            
+            # 获取按钮中心坐标
+            x = pos_data.get("x", 0)
+            y = pos_data.get("y", 0)
+            trigger_method = pos_data.get("method", "unknown")
+            
+            # Step 2: 使用 Qt 原生鼠标点击
+            def do_native_click():
+                try:
+                    # 获取 focusProxy（实际接收事件的 widget）
+                    target_widget = self.web_view.focusProxy()
+                    if not target_widget:
+                        target_widget = self.web_view
+                    
+                    # 转换坐标到 widget 坐标系
+                    local_pos = QPointF(x, y)
+                    global_pos = target_widget.mapToGlobal(local_pos.toPoint())
+                    global_pos_f = QPointF(global_pos.x(), global_pos.y())
+                    
+                    # 鼠标按下事件
+                    press_event = QMouseEvent(
+                        QMouseEvent.MouseButtonPress,
+                        local_pos,
+                        global_pos_f,
+                        Qt.LeftButton,
+                        Qt.LeftButton,
+                        Qt.NoModifier
+                    )
+                    QCoreApplication.sendEvent(target_widget, press_event)
+                    
+                    # 鼠标释放事件
+                    release_event = QMouseEvent(
+                        QMouseEvent.MouseButtonRelease,
+                        local_pos,
+                        global_pos_f,
+                        Qt.LeftButton,
+                        Qt.NoButton,
+                        Qt.NoModifier
+                    )
+                    QCoreApplication.sendEvent(target_widget, release_event)
+                    
+                except Exception as e:
+                    if callback:
+                        callback(False, {"error": f"Qt鼠标点击失败: {str(e)}", "step": 2})
+                    return
+                
+                # Step 3: 等待弹窗出现后发送 Enter 键
+                def send_enter_key():
+                    try:
+                        # 确保 web_view 获得焦点
+                        self.web_view.setFocus()
+                        target_widget = self.web_view.focusProxy()
+                        if not target_widget:
+                            target_widget = self.web_view
+                        
+                        # 创建 Enter 键按下事件
+                        key_press = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Return, Qt.NoModifier)
+                        QCoreApplication.sendEvent(target_widget, key_press)
+                        
+                        # 创建 Enter 键释放事件
+                        key_release = QKeyEvent(QKeyEvent.KeyRelease, Qt.Key_Return, Qt.NoModifier)
+                        QCoreApplication.sendEvent(target_widget, key_release)
+                        
+                        if callback:
+                            callback(True, {
+                                "success": True,
+                                "step": 3,
+                                "triggerMethod": trigger_method,
+                                "sendMethod": "qt_native_enter_key"
+                            })
+                    except Exception as e:
+                        if callback:
+                            callback(False, {
+                                "error": f"发送 Enter 键失败: {str(e)}",
+                                "step": 3,
+                                "triggerMethod": trigger_method
+                            })
+                
+                # 等待500ms让弹窗出现（弹窗只停留约1秒，所以要快）
+                QTimer.singleShot(500, send_enter_key)
+            
+            # 稍微延迟执行点击，确保页面稳定
+            QTimer.singleShot(100, do_native_click)
+        
+        self.run_javascript(get_position_script, on_position_result)
 
     def get_page_url(self) -> str:
         """获取当前页面URL"""
