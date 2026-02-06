@@ -1,0 +1,1491 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM 测试工具</title>
+    <style>
+        :root {
+            --bg-primary: #0f0f23;
+            --bg-secondary: #1a1a2e;
+            --bg-tertiary: #252542;
+            --accent: #6366f1;
+            --accent-hover: #818cf8;
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --border: #334155;
+            --success: #22c55e;
+            --warning: #f59e0b;
+        }
+        
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            height: 100vh;
+            display: flex;
+        }
+        
+        /* 左侧配置面板 */
+        .sidebar {
+            width: 280px;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+        }
+        
+        .sidebar h2 {
+            font-size: 14px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 16px;
+        }
+        
+        .config-group {
+            margin-bottom: 24px;
+        }
+        
+        .config-label {
+            display: block;
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+        
+        select, input[type="text"] {
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        
+        select:focus, input:focus {
+            border-color: var(--accent);
+        }
+        
+        .toggle-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .toggle-label {
+            font-size: 14px;
+        }
+        
+        .toggle {
+            width: 44px;
+            height: 24px;
+            background: var(--border);
+            border-radius: 12px;
+            position: relative;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .toggle.active {
+            background: var(--accent);
+        }
+        
+        .toggle::after {
+            content: '';
+            position: absolute;
+            width: 18px;
+            height: 18px;
+            background: white;
+            border-radius: 50%;
+            top: 3px;
+            left: 3px;
+            transition: transform 0.2s;
+        }
+        
+        .toggle.active::after {
+            transform: translateX(20px);
+        }
+        
+        /* Tab导航 */
+        .tab-nav {
+            display: flex;
+            border-bottom: 2px solid var(--border);
+            margin-bottom: 24px;
+        }
+        
+        .tab-btn {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+        }
+        
+        .tab-btn:hover {
+            color: var(--text-primary);
+            background: var(--bg-secondary);
+        }
+        
+        .tab-btn.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+        
+        /* Tab内容 */
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        /* 知识库管理页面 */
+        .knowledge-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 24px;
+        }
+        
+        .knowledge-title h2 {
+            margin: 0 0 4px 0;
+            color: var(--text-primary);
+        }
+        
+        .knowledge-title p {
+            margin: 0;
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+        
+        .knowledge-actions {
+            display: flex;
+            gap: 12px;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: white;
+        }
+        
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+        
+        .btn-primary:hover {
+            background: var(--accent-hover);
+        }
+        
+        .btn-secondary {
+            background: white;
+            color: var(--text-secondary);
+            border-color: var(--border);
+        }
+        
+        .btn-secondary:hover {
+            background: var(--bg-secondary);
+        }
+        
+        /* 搜索框 */
+        .search-box {
+            display: flex;
+            align-items: center;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 12px;
+            margin-bottom: 16px;
+            max-width: 400px;
+        }
+        
+        .search-box input {
+            border: none;
+            background: transparent;
+            outline: none;
+            flex: 1;
+            font-size: 14px;
+            margin-left: 8px;
+        }
+        
+        /* 知识库表格 */
+        .knowledge-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .knowledge-table th {
+            background: var(--bg-secondary);
+            padding: 12px 16px;
+            text-align: left;
+            font-weight: 600;
+            color: var(--accent);
+            font-size: 13px;
+            border-bottom: 2px solid var(--border);
+        }
+        
+        .knowledge-table td {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: top;
+        }
+        
+        .knowledge-table tr:hover {
+            background: var(--bg-secondary);
+        }
+        
+        .category-badge {
+            background: #eff6ff;
+            color: #2563eb;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        
+        .tag {
+            background: #f1f5f9;
+            color: #64748b;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            margin-right: 4px;
+            display: inline-block;
+        }
+        
+        .question-text {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        
+        .answer-text {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+        
+        .action-buttons {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .action-btn {
+            padding: 4px 8px;
+            font-size: 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        .edit-btn {
+            background: #3b82f6;
+            color: white;
+        }
+        
+        .delete-btn {
+            background: #ef4444;
+            color: white;
+        }
+        
+        /* 模态框 */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+        }
+        
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        
+        .modal-header {
+            margin-bottom: 20px;
+        }
+        
+        .modal-header h3 {
+            margin: 0;
+            color: var(--text-primary);
+        }
+        
+        .form-group {
+            margin-bottom: 16px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 4px;
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+        
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        
+        .form-group textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+        
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            margin-top: 24px;
+        }
+        .log-area {
+            margin-top: 20px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        
+        .log-container {
+            flex: 1;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px;
+            overflow-y: auto;
+            max-height: 300px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 11px;
+            line-height: 1.4;
+        }
+        
+        .log-entry {
+            margin-bottom: 4px;
+            word-wrap: break-word;
+        }
+        
+        .log-time {
+            color: var(--text-secondary);
+            margin-right: 8px;
+        }
+        
+        .log-info { color: var(--text-primary); }
+        .log-success { color: var(--success); }
+        .log-warning { color: var(--warning); }
+        .log-error { color: #ef4444; }
+        
+        .log-controls {
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .log-clear-btn {
+            padding: 4px 8px;
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .log-clear-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        
+        .log-auto-scroll {
+            display: flex;
+            align-items: center;
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        
+        .log-auto-scroll input {
+            margin-right: 4px;
+        }
+        
+        .stats {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border);
+        }
+        
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            padding: 6px 0;
+            color: var(--text-secondary);
+        }
+        
+        .stat-value {
+            color: var(--text-primary);
+        }
+        
+        /* 右侧聊天区域 */
+        .chat-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .chat-header {
+            padding: 16px 24px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .chat-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        
+        .clear-btn {
+            padding: 8px 16px;
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        
+        .clear-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        
+        /* 消息区域 */
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        
+        .message {
+            max-width: 70%;
+            padding: 14px 18px;
+            border-radius: 16px;
+            line-height: 1.6;
+            font-size: 14px;
+            position: relative;
+        }
+        
+        .message.user {
+            align-self: flex-end;
+            background: var(--accent);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+        
+        .message.assistant {
+            align-self: flex-start;
+            background: var(--bg-tertiary);
+            border-bottom-left-radius: 4px;
+        }
+        
+        .message-meta {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 8px;
+            display: flex;
+            gap: 12px;
+        }
+        
+        .message.user .message-meta {
+            color: rgba(255,255,255,0.7);
+        }
+        
+        .source-tag {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        
+        .source-tag.knowledge {
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--success);
+        }
+        
+        .source-tag.llm {
+            background: rgba(99, 102, 241, 0.2);
+            color: var(--accent-hover);
+        }
+        
+        .message-image {
+            max-width: 200px;
+            border-radius: 8px;
+            margin-top: 8px;
+        }
+        
+        /* 输入区域 */
+        .input-area {
+            padding: 20px 24px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+        }
+        
+        .input-row {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+        
+        .input-wrapper {
+            flex: 1;
+            position: relative;
+        }
+        
+        #messageInput {
+            width: 100%;
+            padding: 14px 48px 14px 16px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--text-primary);
+            font-size: 14px;
+            resize: none;
+            min-height: 52px;
+            max-height: 150px;
+            outline: none;
+        }
+        
+        #messageInput:focus {
+            border-color: var(--accent);
+        }
+        
+        .input-actions {
+            position: absolute;
+            right: 8px;
+            bottom: 8px;
+            display: flex;
+            gap: 4px;
+        }
+        
+        .icon-btn {
+            width: 36px;
+            height: 36px;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        
+        .icon-btn:hover {
+            background: var(--bg-primary);
+            color: var(--accent);
+        }
+        
+        .send-btn, .stop-btn {
+            padding: 14px 24px;
+            border: none;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .send-btn {
+            background: var(--accent);
+            color: white;
+        }
+        
+        .send-btn:hover {
+            background: var(--accent-hover);
+        }
+        
+        .stop-btn {
+            background: var(--warning);
+            color: white;
+            margin-left: 8px;
+        }
+        
+        .stop-btn:hover {
+            background: #d97706;
+        }
+        
+        .send-btn:disabled, .stop-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        /* 加载动画 */
+        .loading {
+            display: flex;
+            gap: 4px;
+            padding: 14px 18px;
+        }
+        
+        .loading span {
+            width: 8px;
+            height: 8px;
+            background: var(--text-secondary);
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out;
+        }
+        
+        .loading span:nth-child(1) { animation-delay: -0.32s; }
+        .loading span:nth-child(2) { animation-delay: -0.16s; }
+        
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+        
+        /* 隐藏的文件上传 */
+        #imageInput {
+            display: none;
+        }
+        
+        /* 欢迎消息 */
+        .welcome {
+            text-align: center;
+            padding: 60px 40px;
+            color: var(--text-secondary);
+        }
+        
+        .welcome h3 {
+            font-size: 24px;
+            color: var(--text-primary);
+            margin-bottom: 12px;
+        }
+        
+        .welcome p {
+            font-size: 14px;
+            line-height: 1.8;
+        }
+    </style>
+</head>
+<body>
+    <!-- 左侧配置面板 -->
+    <div class="sidebar">
+        <h2>配置</h2>
+        
+        <div class="config-group">
+            <label class="config-label">选择模型</label>
+            <select id="modelSelect">
+                <option value="阿里千问">阿里千问</option>
+                <option value="DeepSeek">DeepSeek</option>
+            </select>
+        </div>
+        
+        <div class="toggle-row">
+            <span class="toggle-label">优先知识库</span>
+            <div class="toggle active" id="knowledgeToggle"></div>
+        </div>
+        
+        <!-- 日志区域 -->
+        <div class="log-area">
+            <h2>运行日志</h2>
+            <div class="log-controls">
+                <div class="log-auto-scroll">
+                    <input type="checkbox" id="autoScrollLog" checked>
+                    <label for="autoScrollLog">自动滚动</label>
+                </div>
+                <button class="log-clear-btn" onclick="clearLogs()">清空日志</button>
+            </div>
+            <div class="log-container" id="logContainer">
+                <div class="log-entry log-info">
+                    <span class="log-time">[00:00:00]</span>
+                    等待服务启动...
+                </div>
+            </div>
+        </div>
+        
+        <div class="stats">
+            <h2>状态</h2>
+            <div class="stat-item">
+                <span>知识库条目</span>
+                <span class="stat-value" id="knowledgeCount">-</span>
+            </div>
+            <div class="stat-item">
+                <span>当前模型</span>
+                <span class="stat-value" id="currentModel">-</span>
+            </div>
+            <div class="stat-item">
+                <span>响应时间</span>
+                <span class="stat-value" id="lastResponseTime">-</span>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 右侧内容区域 -->
+    <div class="main-content">
+        <!-- Tab导航 -->
+        <div class="tab-nav">
+            <button class="tab-btn active" onclick="switchTab('chat')">对话测试</button>
+            <button class="tab-btn" onclick="switchTab('knowledge')">知识库管理</button>
+        </div>
+        
+        <!-- 对话测试Tab -->
+        <div id="chatTab" class="tab-content active">
+            <div class="chat-container">
+                <div class="chat-header">
+                    <h1>LLM 测试对话</h1>
+                    <button class="clear-btn" onclick="clearHistory()">清空对话</button>
+                </div>
+                
+                <div class="messages" id="messages">
+                    <div class="welcome">
+                        <h2>👋 开始测试</h2>
+                        <p>输入消息测试大模型回复</p>
+                        <p>支持切换模型、开关知识库匹配</p>
+                    </div>
+                </div>
+                
+                <div class="input-area">
+                    <textarea id="messageInput" placeholder="输入消息..." rows="1"></textarea>
+                    <button class="send-btn" id="sendBtn" onclick="sendMessage()">发送</button>
+                    <button class="stop-btn" id="stopBtn" onclick="stopRequest()" style="display: none;">停止</button>
+                </div>
+                <input type="file" id="imageInput" accept="image/*" onchange="handleImageSelect(event)">
+            </div>
+        </div>
+        
+        <!-- 知识库管理Tab -->
+        <div id="knowledgeTab" class="tab-content">
+            <div class="knowledge-header">
+                <div class="knowledge-title">
+                    <h2>知识库管理</h2>
+                    <p>维护 AI 的回复逻辑与业务话术</p>
+                </div>
+                <div class="knowledge-actions">
+                    <button class="btn btn-secondary" onclick="exportKnowledge()">导出</button>
+                    <button class="btn btn-secondary" onclick="importKnowledge()">批量导入</button>
+                    <button class="btn btn-primary" onclick="addKnowledgeItem()">添加话术</button>
+                </div>
+            </div>
+            
+            <div class="search-box">
+                <span>🔍</span>
+                <input type="text" id="knowledgeSearch" placeholder="搜索关键词、标签或问题..." oninput="searchKnowledge()">
+            </div>
+            
+            <div class="knowledge-stats" id="knowledgeStats">共 0 条</div>
+            
+            <table class="knowledge-table">
+                <thead>
+                    <tr>
+                        <th>分类</th>
+                        <th>标签</th>
+                        <th>问题</th>
+                        <th>答案</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="knowledgeTableBody">
+                    <!-- 动态加载 -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- 知识库编辑模态框 -->
+    <div id="knowledgeModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">添加知识库</h3>
+            </div>
+            <form id="knowledgeForm">
+                <div class="form-group">
+                    <label for="itemCategory">分类</label>
+                    <select id="itemCategory">
+                        <option value="购买方式">购买方式</option>
+                        <option value="地址门店">地址门店</option>
+                        <option value="选购建议">选购建议</option>
+                        <option value="品牌介绍">品牌介绍</option>
+                        <option value="价格报价">价格报价</option>
+                        <option value="异议处理">异议处理</option>
+                        <option value="预约到店">预约到店</option>
+                        <option value="佩戴体验">佩戴体验</option>
+                        <option value="产品介绍">产品介绍</option>
+                        <option value="售后政策">售后政策</option>
+                        <option value="护理建议">护理建议</option>
+                        <option value="引导私域">引导私域</option>
+                        <option value="促销规则">促销规则</option>
+                        <option value="需求探索">需求探索</option>
+                        <option value="转介绍会员">转介绍会员</option>
+                        <option value="使用寿命">使用寿命</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="itemTags">标签（用逗号分隔）</label>
+                    <input type="text" id="itemTags" placeholder="如：价格,异议处理,售前话术">
+                </div>
+                
+                <div class="form-group">
+                    <label for="itemQuestion">问题</label>
+                    <textarea id="itemQuestion" placeholder="输入问题..." rows="3"></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label for="itemAnswer">答案</label>
+                    <textarea id="itemAnswer" placeholder="输入答案..." rows="4"></textarea>
+                </div>
+                
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeKnowledgeModal()">取消</button>
+                    <button type="submit" class="btn btn-primary">保存</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <script>
+        const sessionId = 'test-session-' + Date.now();
+        let useKnowledge = true;
+        let logIndex = 0;
+        let logPollingInterval = null;
+        
+        // Tab切换
+        function switchTab(tabName) {
+            // 切换按钮状态
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            // 切换内容显示
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            document.getElementById(tabName + 'Tab').classList.add('active');
+            
+            // 如果切换到知识库tab，加载数据
+            if (tabName === 'knowledge') {
+                loadKnowledgeData();
+            }
+        }
+        
+        // 知识库管理功能
+        let currentEditingItem = null;
+        let knowledgeData = [];
+        
+        // 加载知识库数据
+        async function loadKnowledgeData() {
+            try {
+                const res = await fetch('/api/knowledge');
+                const data = await res.json();
+                knowledgeData = data.items || [];
+                renderKnowledgeTable();
+                updateKnowledgeStats();
+            } catch (e) {
+                console.error('加载知识库数据失败:', e);
+            }
+        }
+        
+        // 渲染知识库表格
+        function renderKnowledgeTable(searchTerm = '') {
+            const tbody = document.getElementById('knowledgeTableBody');
+            tbody.innerHTML = '';
+            
+            let filteredData = knowledgeData;
+            if (searchTerm) {
+                filteredData = knowledgeData.filter(item => 
+                    item.question.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                    item.answer.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                    item.category.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                    (item.tags && item.tags.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase())))
+                );
+            }
+            
+            filteredData.forEach(item => {
+                const row = document.createElement('tr');
+                
+                // 分类
+                const categoryCell = document.createElement('td');
+                categoryCell.innerHTML = `<span class="category-badge">${item.category || '未分类'}</span>`;
+                
+                // 标签
+                const tagsCell = document.createElement('td');
+                const tags = (item.tags || []).slice(0, 2);
+                tagsCell.innerHTML = tags.map(tag => `<span class="tag">${tag}</span>`).join('');
+                if (item.tags && item.tags.length > 2) {
+                    tagsCell.innerHTML += `<span class="tag">+${item.tags.length - 2}</span>`;
+                }
+                
+                // 问题
+                const questionCell = document.createElement('td');
+                questionCell.innerHTML = `<div class="question-text">${item.question}</div>`;
+                
+                // 答案
+                const answerCell = document.createElement('td');
+                answerCell.innerHTML = `<div class="answer-text">${item.answer}</div>`;
+                
+                // 操作
+                const actionCell = document.createElement('td');
+                actionCell.innerHTML = `
+                    <div class="action-buttons">
+                        <button class="action-btn edit-btn" onclick="editKnowledgeItem('${item.id}')">编辑</button>
+                        <button class="action-btn delete-btn" onclick="deleteKnowledgeItem('${item.id}')">删除</button>
+                    </div>
+                `;
+                
+                row.appendChild(categoryCell);
+                row.appendChild(tagsCell);
+                row.appendChild(questionCell);
+                row.appendChild(answerCell);
+                row.appendChild(actionCell);
+                
+                tbody.appendChild(row);
+            });
+            
+            updateKnowledgeStats(filteredData.length);
+        }
+        
+        // 更新统计信息
+        function updateKnowledgeStats(count = null) {
+            const stats = document.getElementById('knowledgeStats');
+            const actualCount = count !== null ? count : knowledgeData.length;
+            stats.textContent = `共 ${actualCount} 条`;
+        }
+        
+        // 搜索知识库
+        function searchKnowledge() {
+            const searchTerm = document.getElementById('knowledgeSearch').value;
+            renderKnowledgeTable(searchTerm);
+        }
+        
+        // 添加知识库项
+        function addKnowledgeItem() {
+            currentEditingItem = null;
+            document.getElementById('modalTitle').textContent = '添加知识库';
+            document.getElementById('knowledgeForm').reset();
+            document.getElementById('knowledgeModal').classList.add('active');
+        }
+        
+        // 编辑知识库项
+        function editKnowledgeItem(id) {
+            const item = knowledgeData.find(item => item.id === id);
+            if (!item) return;
+            
+            currentEditingItem = item;
+            document.getElementById('modalTitle').textContent = '编辑知识库';
+            document.getElementById('itemCategory').value = item.category || '';
+            document.getElementById('itemTags').value = (item.tags || []).join('、');
+            document.getElementById('itemQuestion').value = item.question || '';
+            document.getElementById('itemAnswer').value = item.answer || '';
+            document.getElementById('knowledgeModal').classList.add('active');
+        }
+        
+        // 保存知识库项
+        async function saveKnowledgeItem() {
+            const category = document.getElementById('itemCategory').value;
+            const tagsRaw = document.getElementById('itemTags').value;
+            const question = document.getElementById('itemQuestion').value.trim();
+            const answer = document.getElementById('itemAnswer').value.trim();
+            
+            if (!question || !answer) {
+                alert('问题和答案不能为空');
+                return;
+            }
+            
+            const tags = tagsRaw.split(/[，,、;；\s]+/).filter(tag => tag.trim());
+            
+            const itemData = {
+                category,
+                tags,
+                question,
+                answer
+            };
+            
+            try {
+                let url = '/api/knowledge';
+                let method = 'POST';
+                
+                if (currentEditingItem) {
+                    url += `/${currentEditingItem.id}`;
+                    method = 'PUT';
+                }
+                
+                const res = await fetch(url, {
+                    method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(itemData)
+                });
+                
+                if (res.ok) {
+                    closeKnowledgeModal();
+                    loadKnowledgeData();
+                    addLogEntry(currentEditingItem ? '知识库项已更新' : '知识库项已添加', 'success');
+                } else {
+                    alert('保存失败');
+                }
+            } catch (e) {
+                console.error('保存知识库项失败:', e);
+                alert('保存失败');
+            }
+        }
+        
+        // 删除知识库项
+        async function deleteKnowledgeItem(id) {
+            if (!confirm('确定要删除这条知识库项吗？')) {
+                return;
+            }
+            
+            try {
+                const res = await fetch(`/api/knowledge/${id}`, {
+                    method: 'DELETE'
+                });
+                
+                if (res.ok) {
+                    loadKnowledgeData();
+                    addLogEntry('知识库项已删除', 'success');
+                } else {
+                    alert('删除失败');
+                }
+            } catch (e) {
+                console.error('删除知识库项失败:', e);
+                alert('删除失败');
+            }
+        }
+        
+        // 关闭模态框
+        function closeKnowledgeModal() {
+            document.getElementById('knowledgeModal').classList.remove('active');
+            document.getElementById('knowledgeForm').reset();
+            currentEditingItem = null;
+        }
+        
+        // 导出知识库
+        async function exportKnowledge() {
+            try {
+                const res = await fetch('/api/knowledge/export');
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'knowledge_base.json';
+                a.click();
+                window.URL.revokeObjectURL(url);
+                addLogEntry('知识库已导出', 'success');
+            } catch (e) {
+                console.error('导出失败:', e);
+                alert('导出失败');
+            }
+        }
+        
+        // 导入知识库
+        function importKnowledge() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json';
+            input.onchange = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                try {
+                    const res = await fetch('/api/knowledge/import', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (res.ok) {
+                        loadKnowledgeData();
+                        addLogEntry('知识库已导入', 'success');
+                    } else {
+                        alert('导入失败');
+                    }
+                } catch (e) {
+                    console.error('导入失败:', e);
+                    alert('导入失败');
+                }
+            };
+            input.click();
+        }
+        
+        // 初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            loadConfig();
+            startLogPolling();
+            loadKnowledgeData();
+            
+            // 回车发送
+            document.getElementById('messageInput').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
+            
+            // 知识库表单提交
+            document.getElementById('knowledgeForm').addEventListener('submit', (e) => {
+                e.preventDefault();
+                saveKnowledgeItem();
+            });
+            
+            // 自动调整输入框高度
+            const messageInput = document.getElementById('messageInput');
+            messageInput.addEventListener('input', () => {
+                messageInput.style.height = 'auto';
+                messageInput.style.height = messageInput.scrollHeight + 'px';
+            });
+            
+            // 知识库开关
+            document.getElementById('knowledgeToggle').addEventListener('click', function() {
+                this.classList.toggle('active');
+                useKnowledge = this.classList.contains('active');
+            });
+            
+            // 模型切换
+            document.getElementById('modelSelect').addEventListener('change', async (e) => {
+                const model = e.target.value;
+                await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ current_model: model })
+                });
+                document.getElementById('currentModel').textContent = model;
+            });
+        });
+        
+        function startLogPolling() {
+            // 每秒获取一次新日志
+            logPollingInterval = setInterval(async () => {
+                try {
+                    const res = await fetch(`/api/logs?since=${logIndex}`);
+                    const data = await res.json();
+                    
+                    if (data.logs && data.logs.length > 0) {
+                        const container = document.getElementById('logContainer');
+                        const autoScroll = document.getElementById('autoScrollLog').checked;
+                        
+                        data.logs.forEach(log => {
+                            const logEntry = document.createElement('div');
+                            logEntry.className = `log-entry log-${log.level}`;
+                            logEntry.innerHTML = `
+                                <span class="log-time">[${log.time}]</span>
+                                ${log.message}
+                            `;
+                            container.appendChild(logEntry);
+                        });
+                        
+                        // 更新日志索引
+                        logIndex += data.logs.length;
+                        
+                        // 限制日志数量
+                        const maxLogs = 100;
+                        const entries = container.children;
+                        if (entries.length > maxLogs) {
+                            for (let i = 0; i < entries.length - maxLogs; i++) {
+                                entries[i].remove();
+                            }
+                        }
+                        
+                        // 自动滚动到底部
+                        if (autoScroll) {
+                            container.scrollTop = container.scrollHeight;
+                        }
+                    }
+                } catch (e) {
+                    console.error('获取日志失败:', e);
+                }
+            }, 1000);
+        }
+        
+        function clearLogs() {
+            const container = document.getElementById('logContainer');
+            container.innerHTML = `
+                <div class="log-entry log-info">
+                    <span class="log-time">[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}]</span>
+                    日志已清空
+                </div>
+            `;
+            logIndex = 0; // 重置日志索引
+        }
+        
+        function addLogEntry(message, level = 'info') {
+            const container = document.getElementById('logContainer');
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry log-${level}`;
+            const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+            logEntry.innerHTML = `
+                <span class="log-time">[${time}]</span>
+                ${message}
+            `;
+            container.appendChild(logEntry);
+            
+            // 自动滚动
+            if (document.getElementById('autoScrollLog').checked) {
+                container.scrollTop = container.scrollHeight;
+            }
+        }
+        
+        async function loadConfig() {
+            try {
+                const res = await fetch('/api/config');
+                const data = await res.json();
+                
+                document.getElementById('modelSelect').value = data.current_model;
+                document.getElementById('knowledgeCount').textContent = data.knowledge_count;
+                document.getElementById('currentModel').textContent = data.current_model;
+            } catch (e) {
+                console.error('加载配置失败:', e);
+            }
+        }
+        
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            if (!message) return;
+            
+            // 清空输入框
+            input.value = '';
+            input.style.height = 'auto';
+            
+            // 移除欢迎消息
+            const welcome = document.querySelector('.welcome');
+            if (welcome) welcome.remove();
+            
+            // 添加用户消息
+            addMessage(message, 'user');
+            
+            // 显示加载动画
+            const loadingId = showLoading();
+            
+            // 禁用发送按钮，显示停止按钮
+            document.getElementById('sendBtn').disabled = true;
+            document.getElementById('stopBtn').style.display = 'inline-block';
+            
+            // 添加日志
+            addLogEntry(`📤 发送消息: ${message.substring(0, 50)}${message.length > 50 ? '...' : ''}`, 'info');
+            
+            try {
+                const res = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message,
+                        session_id: sessionId,
+                        use_knowledge: useKnowledge
+                    })
+                });
+                
+                const data = await res.json();
+                
+                // 移除加载动画
+                removeLoading(loadingId);
+                
+                if (data.error) {
+                    addMessage('错误: ' + data.error, 'assistant');
+                    addLogEntry(`❌ 请求失败: ${data.error}`, 'error');
+                } else {
+                    addMessage(data.reply, 'assistant', {
+                        source: data.source,
+                        model: data.model,
+                        time: data.time_ms
+                    });
+                    
+                    document.getElementById('lastResponseTime').textContent = data.time_ms + 'ms';
+                    
+                    // 添加成功日志
+                    const sourceText = data.source === 'knowledge' ? '知识库' : 'LLM';
+                    addLogEntry(`✅ 收到回复 (${sourceText}): ${data.reply.substring(0, 30)}...`, 'success');
+                }
+            } catch (e) {
+                removeLoading(loadingId);
+                addMessage('请求失败: ' + e.message, 'assistant');
+                addLogEntry(`❌ 网络错误: ${e.message}`, 'error');
+            }
+            
+            document.getElementById('sendBtn').disabled = false;
+            document.getElementById('stopBtn').style.display = 'none';
+        }
+        
+        function addMessage(content, role, meta = null) {
+            const container = document.getElementById('messages');
+            const div = document.createElement('div');
+            div.className = 'message ' + role;
+            
+            let html = content.replace(/\n/g, '<br>');
+            
+            if (meta) {
+                html += `<div class="message-meta">`;
+                if (meta.source) {
+                    const sourceLabel = meta.source === 'knowledge' ? '知识库' : 'LLM';
+                    html += `<span class="source-tag ${meta.source}">${sourceLabel}</span>`;
+                }
+                if (meta.model) {
+                    html += `<span>${meta.model}</span>`;
+                }
+                if (meta.time) {
+                    html += `<span>${meta.time}ms</span>`;
+                }
+                html += `</div>`;
+            }
+            
+            div.innerHTML = html;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        function showLoading() {
+            const container = document.getElementById('messages');
+            const div = document.createElement('div');
+            div.className = 'message assistant loading';
+            div.id = 'loading-' + Date.now();
+            div.innerHTML = '<span></span><span></span><span></span>';
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+            return div.id;
+        }
+        
+        function removeLoading(id) {
+            const el = document.getElementById(id);
+            if (el) el.remove();
+        }
+        
+        async function stopRequest() {
+            try {
+                addLogEntry('🛑 用户请求停止...', 'warning');
+                
+                const res = await fetch('/api/chat/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const data = await res.json();
+                
+                // 移除加载动画
+                const loadingElements = document.querySelectorAll('.loading');
+                loadingElements.forEach(el => el.remove());
+                
+                // 恢复按钮状态
+                document.getElementById('sendBtn').disabled = false;
+                document.getElementById('stopBtn').style.display = 'none';
+                
+                if (data.success) {
+                    addMessage('请求已取消', 'assistant');
+                    addLogEntry('✅ 请求已成功取消', 'success');
+                } else {
+                    addMessage('取消失败: ' + (data.error || '未知错误'), 'assistant');
+                    addLogEntry(`❌ 取消失败: ${data.error || '未知错误'}`, 'error');
+                }
+            } catch (e) {
+                addMessage('取消请求失败: ' + e.message, 'assistant');
+                addLogEntry(`❌ 取消请求异常: ${e.message}`, 'error');
+                // 恢复按钮状态
+                document.getElementById('sendBtn').disabled = false;
+                document.getElementById('stopBtn').style.display = 'none';
+            }
+        }
+        
+        async function clearHistory() {
+            await fetch('/api/history?session_id=' + sessionId, { method: 'DELETE' });
+            const container = document.getElementById('messages');
+            container.innerHTML = `
+                <div class="welcome">
+                    <h3>开始测试</h3>
+                    <p>输入消息测试大模型回复<br>支持切换模型、开关知识库匹配</p>
+                </div>
+            `;
+        }
+        
+        async function handleImageSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const formData = new FormData();
+            formData.append('image', file);
+            
+            try {
+                const res = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    // 显示已上传的图片
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const welcome = document.querySelector('.welcome');
+                        if (welcome) welcome.remove();
+                        
+                        const container = document.getElementById('messages');
+                        const div = document.createElement('div');
+                        div.className = 'message user';
+                        div.innerHTML = `<img src="${e.target.result}" class="message-image">`;
+                        container.appendChild(div);
+                        container.scrollTop = container.scrollHeight;
+                        
+                        addMessage(`📷 图片已上传: ${data.filename}`, 'assistant');
+                    };
+                    reader.readAsDataURL(file);
+                } else {
+                    alert('上传失败: ' + data.error);
+                }
+            } catch (e) {
+                alert('上传失败: ' + e.message);
+            }
+            
+            event.target.value = '';
+        }
+    </script>
+</body>
+</html>
