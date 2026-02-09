@@ -4,12 +4,14 @@
 """
 
 import os
+import json
 import shutil
 from pathlib import Path
+from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QMessageBox, QFileDialog,
-    QAbstractItemView, QProgressBar, QSplitter, QFrame
+    QAbstractItemView, QProgressBar, QFrame, QComboBox, QDialog, QDialogButtonBox
 )
 from PySide6.QtCore import Qt, Signal, QThread, QSize
 from PySide6.QtGui import QPixmap, QIcon
@@ -93,13 +95,18 @@ class ImageManagementTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.image_dir = Path("images")
+        self.categories_file = Path("config/image_categories.json")
         self.current_images = []
         self.selected_images = []
         self.image_worker = None
+        self.categories = ["联系方式", "店铺地址"]
+        self.image_categories = {}  # {filename: category}
+        self.current_filter = "全部"
         
         # 确保图片目录存在
         self.image_dir.mkdir(parents=True, exist_ok=True)
         
+        self._load_categories()
         self._setup_ui()
         self._load_images()
     
@@ -113,24 +120,31 @@ class ImageManagementTab(QWidget):
         header = self._create_header()
         layout.addWidget(header)
         
-        # 主要内容区域
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(16)
+        # 分类筛选
+        filter_layout = QHBoxLayout()
+        filter_label = QLabel("分类筛选：")
+        filter_label.setStyleSheet("font-weight: 600; color: #475569;")
+        filter_layout.addWidget(filter_label)
         
-        # 左侧图片列表
-        left_panel = self._create_image_panel()
-        left_panel.setMinimumWidth(500)
-        splitter.addWidget(left_panel)
+        self.category_filter = QComboBox()
+        self.category_filter.addItems(["全部"] + self.categories + ["未分类"])
+        self.category_filter.currentTextChanged.connect(self._on_filter_changed)
+        self.category_filter.setFixedWidth(200)
+        self.category_filter.setStyleSheet("""
+            QComboBox {
+                padding: 8px 12px;
+                border: 1px solid #e2e8f0;
+                border-radius: 6px;
+                background: white;
+            }
+        """)
+        filter_layout.addWidget(self.category_filter)
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
         
-        # 右侧预览面板
-        right_panel = self._create_preview_panel()
-        right_panel.setMinimumWidth(300)
-        right_panel.setMaximumWidth(450)
-        splitter.addWidget(right_panel)
-        
-        splitter.setSizes([800, 350])
-        layout.addWidget(splitter, 1)
+        # 图片列表面板
+        image_panel = self._create_image_panel()
+        layout.addWidget(image_panel, 1)
         
         # 底部状态栏
         status_layout = QHBoxLayout()
@@ -166,6 +180,33 @@ class ImageManagementTab(QWidget):
         self.select_all_btn.setCursor(Qt.PointingHandCursor)
         self.select_all_btn.clicked.connect(self._select_all)
         header_layout.addWidget(self.select_all_btn)
+        
+        # 快捷分类按钮
+        for category in self.categories:
+            cat_btn = QPushButton(f"设为{category}")
+            cat_btn.setObjectName("Secondary")
+            cat_btn.setCursor(Qt.PointingHandCursor)
+            cat_btn.clicked.connect(lambda checked, cat=category: self._quick_set_category(cat))
+            cat_btn.setStyleSheet("""
+                QPushButton {
+                    background: #10b981;
+                    color: white;
+                    border: none;
+                    padding: 8px 16px;
+                    border-radius: 6px;
+                    font-weight: 500;
+                }
+                QPushButton:hover {
+                    background: #059669;
+                }
+            """)
+            header_layout.addWidget(cat_btn)
+        
+        self.set_category_btn = QPushButton("更多分类")
+        self.set_category_btn.setObjectName("Secondary")
+        self.set_category_btn.setCursor(Qt.PointingHandCursor)
+        self.set_category_btn.clicked.connect(self._set_category)
+        header_layout.addWidget(self.set_category_btn)
 
         self.deselect_all_btn = QPushButton("取消选择")
         self.deselect_all_btn.setObjectName("Secondary")
@@ -209,43 +250,49 @@ class ImageManagementTab(QWidget):
         
         return group
     
-    def _create_preview_panel(self):
-        """创建预览面板"""
-        group = QFrame()
-        group.setObjectName("Card")
-        layout = QVBoxLayout(group)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(20)
-
-        header_row = QHBoxLayout()
-        title = QLabel("素材预览")
-        title.setStyleSheet("font-weight: 700; font-size: 13px; color: #475569; text-transform: uppercase;")
-        header_row.addWidget(title)
-        header_row.addStretch()
-        layout.addLayout(header_row)
-        
-        # 预览区域
-        preview_container = QFrame()
-        preview_container.setStyleSheet("background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;")
-        preview_layout = QVBoxLayout(preview_container)
-        
-        self.preview_label = QLabel("选择图片进行预览")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setMinimumSize(250, 250)
-        self.preview_label.setStyleSheet("border: none; color: #94a3b8;")
-        preview_layout.addWidget(self.preview_label)
-        
-        layout.addWidget(preview_container)
-        
-        # 图片信息
-        self.info_label = QLabel("")
-        self.info_label.setWordWrap(True)
-        self.info_label.setStyleSheet("color: #334155; font-size: 13px; line-height: 1.5;")
-        layout.addWidget(self.info_label)
-        
-        layout.addStretch()
-        
-        return group
+    def _load_categories(self):
+        """加载分类配置"""
+        try:
+            if self.categories_file.exists():
+                with open(self.categories_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.categories = data.get("categories", ["联系方式", "店铺地址"])
+                    images_data = data.get("images", {})
+                    # 转换为 filename -> category 映射
+                    self.image_categories = {}
+                    for category, filenames in images_data.items():
+                        for filename in filenames:
+                            self.image_categories[filename] = category
+        except Exception as e:
+            self.log_message.emit(f"❌ 加载分类配置失败: {str(e)}")
+    
+    def _save_categories(self):
+        """保存分类配置"""
+        try:
+            # 转换为 category -> [filenames] 格式
+            images_data = {cat: [] for cat in self.categories}
+            for filename, category in self.image_categories.items():
+                if category in images_data:
+                    images_data[category].append(filename)
+            
+            data = {
+                "version": 1,
+                "updated_at": datetime.now().isoformat(),
+                "categories": self.categories,
+                "images": images_data
+            }
+            
+            self.categories_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.categories_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            
+        except Exception as e:
+            self.log_message.emit(f"❌ 保存分类配置失败: {str(e)}")
+    
+    def _on_filter_changed(self, filter_text):
+        """分类筛选变更"""
+        self.current_filter = filter_text
+        self._load_images()
     
     def _load_images(self):
         """加载图片"""
@@ -279,13 +326,35 @@ class ImageManagementTab(QWidget):
         self.image_worker.finished.connect(self._on_load_finished)
         self.image_worker.start()
     
+    def _should_show_image(self, filename):
+        """根据当前筛选判断是否显示图片"""
+        if self.current_filter == "全部":
+            return True
+        elif self.current_filter == "未分类":
+            return filename not in self.image_categories
+        else:
+            return self.image_categories.get(filename) == self.current_filter
+    
     def _on_image_loaded(self, path: str, pixmap: QPixmap):
         """图片加载完成"""
+        filename = Path(path).name
+        
+        # 应用筛选
+        if not self._should_show_image(filename):
+            return
+        
         item = QListWidgetItem()
         item.setIcon(QIcon(pixmap))
-        item.setText(Path(path).name)
+        
+        # 显示文件名和分类
+        category = self.image_categories.get(filename, "")
+        display_text = filename
+        if category:
+            display_text += f" [{category}]"
+        
+        item.setText(display_text)
         item.setData(Qt.UserRole, path)
-        item.setToolTip(Path(path).name)
+        item.setToolTip(f"{filename}\n分类: {category if category else '未分类'}")
         self.image_list.addItem(item)
     
     def _on_progress_updated(self, current: int, total: int):
@@ -299,6 +368,48 @@ class ImageManagementTab(QWidget):
         self.progress_bar.setVisible(False)
         self.status_label.setText(f"共加载 {len(self.current_images)} 张图片")
         self.log_message.emit(f"✅ 图片加载完成，共 {len(self.current_images)} 张")
+    
+    def _set_category(self):
+        """设置选中图片的分类"""
+        selected_items = self.image_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "警告", "请先选择要设置分类的图片")
+            return
+        
+        dialog = CategorySelectDialog(self.categories, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            category = dialog.get_category()
+            if category == "移除分类":
+                category = None
+            
+            for item in selected_items:
+                image_path = item.data(Qt.UserRole)
+                filename = Path(image_path).name
+                
+                if category:
+                    self.image_categories[filename] = category
+                else:
+                    self.image_categories.pop(filename, None)
+            
+            self._save_categories()
+            self._load_images()
+            self.log_message.emit(f"✅ 已设置 {len(selected_items)} 张图片的分类")
+    
+    def _quick_set_category(self, category: str):
+        """快捷设置分类"""
+        selected_items = self.image_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "警告", "请先选择要设置分类的图片")
+            return
+        
+        for item in selected_items:
+            image_path = item.data(Qt.UserRole)
+            filename = Path(image_path).name
+            self.image_categories[filename] = category
+        
+        self._save_categories()
+        self._load_images()
+        self.log_message.emit(f"✅ 已将 {len(selected_items)} 张图片设置为 [{category}]")
     
     def _upload_images(self):
         """上传图片"""
@@ -380,45 +491,11 @@ class ImageManagementTab(QWidget):
         """选择变更"""
         selected_items = self.image_list.selectedItems()
         self.selected_images = [item.data(Qt.UserRole) for item in selected_items]
-        
-        # 更新预览
-        if selected_items:
-            self._update_preview(selected_items[0])
-        else:
-            self.preview_label.clear()
-            self.preview_label.setText("选择图片进行预览")
-            self.info_label.clear()
     
     def _on_item_double_clicked(self, item):
         """双击项目"""
         image_path = item.data(Qt.UserRole)
         self._open_image_external(image_path)
-    
-    def _update_preview(self, item):
-        """更新预览"""
-        image_path = item.data(Qt.UserRole)
-        path_obj = Path(image_path)
-        
-        try:
-            pixmap = QPixmap(image_path)
-            if not pixmap.isNull():
-                # 缩放图片以适应预览区域
-                scaled_pixmap = pixmap.scaled(
-                    280, 280, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                )
-                self.preview_label.setPixmap(scaled_pixmap)
-                
-                # 显示图片信息
-                file_size = path_obj.stat().st_size
-                size_str = self._format_file_size(file_size)
-                info_text = f"文件名: {path_obj.name}\n大小: {size_str}\n路径: {image_path}"
-                self.info_label.setText(info_text)
-            else:
-                self.preview_label.setText("无法加载图片")
-                self.info_label.clear()
-        except Exception as e:
-            self.preview_label.setText("预览失败")
-            self.info_label.setText(f"错误: {str(e)}")
     
     def _open_image_external(self, image_path):
         """使用外部程序打开图片"""
@@ -445,3 +522,48 @@ class ImageManagementTab(QWidget):
             return f"{size_bytes / (1024 * 1024):.1f} MB"
         else:
             return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+
+
+class CategorySelectDialog(QDialog):
+    """分类选择对话框"""
+    
+    def __init__(self, categories, parent=None):
+        super().__init__(parent)
+        self.categories = categories
+        
+        self.setWindowTitle("选择分类")
+        self.setFixedSize(300, 200)
+        self._setup_ui()
+    
+    def _setup_ui(self):
+        """设置UI"""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        
+        label = QLabel("请选择图片分类：")
+        label.setStyleSheet("font-weight: 600; color: #334155;")
+        layout.addWidget(label)
+        
+        self.category_combo = QComboBox()
+        self.category_combo.addItems(self.categories + ["移除分类"])
+        self.category_combo.setStyleSheet("""
+            QComboBox {
+                padding: 10px 12px;
+                border: 1px solid #e2e8f0;
+                border-radius: 6px;
+                font-size: 14px;
+            }
+        """)
+        layout.addWidget(self.category_combo)
+        
+        layout.addStretch()
+        
+        # 按钮
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+    
+    def get_category(self):
+        """获取选中的分类"""
+        return self.category_combo.currentText()

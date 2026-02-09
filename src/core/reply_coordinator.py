@@ -59,7 +59,7 @@ class ReplyCoordinator(QObject):
             session = self.session_manager.get_or_create_session(session_id)
 
         # 检查是否应该回复（频率控制）
-        if not session.should_reply(min_interval_seconds=30):
+        if not session.should_reply(min_interval_seconds=8):
             return False
 
         # 首先尝试知识库匹配

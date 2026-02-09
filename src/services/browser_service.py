@@ -878,8 +878,8 @@ class BrowserService(QObject):
                                 "triggerMethod": trigger_method
                             })
                 
-                # 等待500ms让弹窗出现（弹窗只停留约1秒，所以要快）
-                QTimer.singleShot(500, send_enter_key)
+                # 等待1000ms让弹窗完全渲染（第一次发送图片弹窗加载较慢）
+                QTimer.singleShot(1000, send_enter_key)
             
             # 稍微延迟执行点击，确保页面稳定
             QTimer.singleShot(100, do_native_click)

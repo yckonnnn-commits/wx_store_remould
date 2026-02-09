@@ -23,6 +23,7 @@ from .browser_tab import BrowserTab
 from .knowledge_tab import KnowledgeTab
 from .model_config_tab import ModelConfigTab
 from .image_management_tab import ImageManagementTab
+from .keyword_trigger_tab import KeywordTriggerTab
 
 
 class MainWindow(QWidget):
@@ -98,7 +99,8 @@ class MainWindow(QWidget):
             ("shop", "微信小店"),
             ("knowledge", "知识库管理"),
             ("model", "模型配置"),
-            ("images", "图片管理")
+            ("images", "图片管理"),
+            ("keywords", "关键词触发图片发送")
         ]
         self.nav_buttons = {}
         for index, (key, label) in enumerate(nav_items):
@@ -132,6 +134,9 @@ class MainWindow(QWidget):
 
         self.image_management_tab = ImageManagementTab()
         self.stack.addWidget(self.image_management_tab)
+
+        self.keyword_trigger_tab = KeywordTriggerTab()
+        self.stack.addWidget(self.keyword_trigger_tab)
 
         content_layout.addWidget(self.stack, 1)
 
@@ -182,6 +187,9 @@ class MainWindow(QWidget):
 
         # 图片管理日志
         self.image_management_tab.log_message.connect(self._on_log_message)
+
+        # 关键词触发日志
+        self.keyword_trigger_tab.log_message.connect(self._on_log_message)
 
     def _load_wechat_store(self):
         """加载微信小店"""

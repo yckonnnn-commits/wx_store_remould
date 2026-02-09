@@ -47,6 +47,12 @@ class MessageProcessor(QObject):
         self._last_grab_time = 0  # 记录上次抓取时间，防抖
         self._is_processing_reply = False  # 标记是否正在处理回复
 
+        # 关键词触发配置
+        self._keyword_triggers = []
+        self._image_categories = {}  # {filename: category}
+        self._user_image_sent = {}  # {user_hash: {category: count}}
+        self._load_keyword_config()
+
         # 定时器
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_cycle)
@@ -62,6 +68,31 @@ class MessageProcessor(QObject):
 
         # 连接协调器信号
         self.coordinator.reply_prepared.connect(self._on_reply_prepared)
+    
+    def _load_keyword_config(self):
+        """加载关键词触发配置"""
+        try:
+            # 加载触发规则
+            triggers_file = Path("config/keyword_triggers.json")
+            if triggers_file.exists():
+                with open(triggers_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self._keyword_triggers = [t for t in data.get("triggers", []) if t.get("enabled", True)]
+            
+            # 加载图片分类
+            categories_file = Path("config/image_categories.json")
+            if categories_file.exists():
+                with open(categories_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    images_data = data.get("images", {})
+                    # 转换为 filename -> category 映射
+                    for category, filenames in images_data.items():
+                        for filename in filenames:
+                            self._image_categories[filename] = category
+                    
+            self.log_message.emit(f"✅ 已加载 {len(self._keyword_triggers)} 条关键词触发规则")
+        except Exception as e:
+            self.log_message.emit(f"⚠️ 加载关键词配置失败: {str(e)}")
 
     def _on_page_loaded(self, success: bool):
         """页面加载完成"""
@@ -266,9 +297,12 @@ class MessageProcessor(QObject):
         self.browser.grab_chat_data(on_data)
 
     def _generate_and_send_reply(self, user_name: str, user_message: str):
-        """生成并发送回复 - 使用大模型"""
-        # 精准关键词：地址在哪里 -> 直接发送图片
-        if self._handle_exact_address_image_reply(user_name, user_message):
+        """生成并发送回复 - 优先检查关键词触发"""
+        # 检查关键词触发
+        triggered_category, image_path = self._check_keyword_trigger(user_name, user_message)
+        if triggered_category and image_path:
+            self.log_message.emit(f"🖼️ 触发关键词 [{triggered_category}]，发送图片")
+            self._send_image(image_path)
             return
 
         # 获取或创建会话
@@ -296,7 +330,9 @@ class MessageProcessor(QObject):
 
     def _on_reply_prepared(self, session_id: str, reply_text: str):
         """回复准备就绪"""
-        self._send_reply(session_id, reply_text)
+        # 延迟3秒发送，模拟人工回复，避免被检测
+        self.log_message.emit(f"⏳ 等待3秒后发送回复...")
+        QTimer.singleShot(3000, lambda: self._send_reply(session_id, reply_text))
 
     def _send_default_reply(self):
         """自动抓取聊天记录并生成回复（进入未读消息时调用）"""
@@ -355,22 +391,6 @@ class MessageProcessor(QObject):
 
         self.browser.send_image(image_path, on_sent)
 
-    def _handle_exact_address_image_reply(self, user_name: str, user_message: str) -> bool:
-        """当用户精准输入"您确定了吧"时随机发送图片，跳过大模型"""
-        if not user_message:
-            return False
-        if user_message.strip() != "您确定了吧":
-            return False
-
-        image_path = self._pick_random_image()
-        if not image_path:
-            self.log_message.emit("⚠️ 未找到可发送的图片，改为调用大模型")
-            return False
-
-        self.log_message.emit("🖼️ 触发问候关键词，随机发送图片，跳过大模型")
-        self._send_image(image_path)
-        return True
-
     def _pick_random_image(self) -> Optional[str]:
         """从图片库中随机选择一张图片"""
         image_dir = Path("images")
@@ -382,6 +402,70 @@ class MessageProcessor(QObject):
         if not candidates:
             return None
         return str(random.choice(candidates).resolve())
+    
+    def _check_keyword_trigger(self, user_name: str, user_message: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        检查是否触发关键词，并检查用户限制
+        Returns: (category, image_path) or (None, None)
+        """
+        if not user_message:
+            return None, None
+        
+        # 生成用户标识
+        import hashlib
+        user_hash = hashlib.md5(user_name.encode()).hexdigest()[:8]
+        
+        # 初始化用户记录
+        if user_hash not in self._user_image_sent:
+            self._user_image_sent[user_hash] = {}
+        
+        # 逐个匹配触发规则
+        for trigger in self._keyword_triggers:
+            keywords = trigger.get("keywords", [])
+            category = trigger.get("category", "")
+            
+            # 检查是否匹配关键词
+            matched = any(keyword in user_message for keyword in keywords)
+            if not matched:
+                continue
+            
+            # 检查用户是否已达到该分类的限制
+            sent_count = self._user_image_sent[user_hash].get(category, 0)
+            if sent_count >= 1:
+                self.log_message.emit(f"⏸️ 用户已接收过 [{category}] 分类图片，跳过触发")
+                continue
+            
+            # 从该分类中随机选择图片
+            image_path = self._pick_category_image(category)
+            if not image_path:
+                self.log_message.emit(f"⚠️ [{category}] 分类没有图片")
+                continue
+            
+            # 记录已发送
+            self._user_image_sent[user_hash][category] = sent_count + 1
+            
+            return category, image_path
+        
+        return None, None
+    
+    def _pick_category_image(self, category: str) -> Optional[str]:
+        """从指定分类中随机选择一张图片"""
+        image_dir = Path("images")
+        if not image_dir.exists():
+            return None
+        
+        # 筛选属于该分类的图片
+        category_images = []
+        for filename, img_category in self._image_categories.items():
+            if img_category == category:
+                img_path = image_dir / filename
+                if img_path.exists():
+                    category_images.append(str(img_path.resolve()))
+        
+        if not category_images:
+            return None
+        
+        return random.choice(category_images)
 
     def _reset_poll_state(self):
         """重置轮询状态"""
@@ -454,8 +538,13 @@ class MessageProcessor(QObject):
                     # 提取最新的用户消息
                     latest_user_msg = user_messages[-1].get("text", "")
                     if latest_user_msg:
-                        if self._handle_exact_address_image_reply(user_name, latest_user_msg):
+                        # 检查关键词触发
+                        triggered_category, image_path = self._check_keyword_trigger(user_name, latest_user_msg)
+                        if triggered_category and image_path:
+                            self.log_message.emit(f"🖼️ 触发关键词 [{triggered_category}]，发送图片")
+                            self._send_image(image_path)
                             return
+                        
                         self.log_message.emit(f"🤖 准备调用大模型生成回复...")
                         self._generate_reply_from_history(user_name, messages, latest_user_msg)
                 

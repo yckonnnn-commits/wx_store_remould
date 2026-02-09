@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated_at": "2026-02-06T16:33:06.980983",
-  "current_model": "阿里千问",
+  "updated_at": "2026-02-09T15:44:08.957410",
+  "current_model": "DeepSeek",
   "models": {
     "ChatGPT": {
       "base_url": "https://api.openai.com/v1",
