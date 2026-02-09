@@ -52,8 +52,22 @@ class LeftPanel(QFrame):
         logo_layout = QVBoxLayout(logo_box)
         logo_layout.setContentsMargins(0, 0, 0, 0)
         logo_layout.setAlignment(Qt.AlignCenter)
-        logo_icon = QLabel("Wx")
-        logo_icon.setObjectName("LogoIcon")
+        
+        # 使用图片图标替代文字
+        from PySide6.QtGui import QPixmap
+        from pathlib import Path
+        logo_icon = QLabel()
+        logo_path = Path(__file__).parent / "assets" / "logo.png"
+        if logo_path.exists():
+            pixmap = QPixmap(str(logo_path))
+            # 缩放到合适大小，保持宽高比
+            scaled_pixmap = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            logo_icon.setPixmap(scaled_pixmap)
+        else:
+            # 如果图片不存在，回退到文字
+            logo_icon.setText("Wx")
+            logo_icon.setObjectName("LogoIcon")
+        
         logo_layout.addWidget(logo_icon)
         header_layout.addWidget(logo_box)
 

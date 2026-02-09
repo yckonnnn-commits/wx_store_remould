@@ -1,0 +1,43 @@
+# 打包文件和目录
+build/
+dist/
+*.spec
+
+# Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# IDE文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+*.temp
+
+# 打包脚本
+build_mac.sh
+
+# 图标文件（如果很大）
+icon/
+
+# 文档文件
+*.md
