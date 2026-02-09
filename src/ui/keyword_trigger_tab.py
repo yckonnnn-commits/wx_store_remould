@@ -42,15 +42,26 @@ class KeywordTriggerTab(QWidget):
         
         # 规则表格
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["关键词", "触发分类", "状态", "操作", "ID"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.setColumnCount(6)  # 增加序号列
+        self.table.setHorizontalHeaderLabels(["序号", "关键词", "触发分类", "状态", "操作", "ID"])
+        self.table.verticalHeader().setVisible(False)  # 隐藏默认行号
+        self.table.verticalHeader().setDefaultSectionSize(50)  # 设置默认行高，确保按钮显示完整
+        
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.table.setColumnWidth(0, 60)
+        
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table.setColumnHidden(4, True)  # 隐藏ID列
+        
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Fixed)
+        self.table.setColumnWidth(4, 260)  # 给操作列固定宽度，防止按钮显示不全
+        
+        self.table.setColumnHidden(5, True)  # 隐藏ID列
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
+        self.table.setWordWrap(False)  # 防止自动换行
+        
         self.table.setStyleSheet("""
             QTableWidget {
                 background: white;
@@ -59,8 +70,8 @@ class KeywordTriggerTab(QWidget):
                 gridline-color: #f1f5f9;
             }
             QTableWidget::item {
-                padding: 12px 16px;
                 border-bottom: 1px solid #f1f5f9;
+                padding-left: 10px; 
             }
             QTableWidget::item:selected {
                 background: #eff6ff;
@@ -158,51 +169,69 @@ class KeywordTriggerTab(QWidget):
         """刷新表格"""
         self.table.setRowCount(0)
         
-        for trigger in self.triggers:
+        for i, trigger in enumerate(self.triggers):
             row = self.table.rowCount()
             self.table.insertRow(row)
+            self.table.setRowHeight(row, 50)  # 显式设置行高
+            
+            # 序号
+            seq_item = QTableWidgetItem(str(i + 1))
+            seq_item.setTextAlignment(Qt.AlignCenter)
+            seq_item.setForeground(Qt.black) # 确保颜色够深
+            seq_item.setFont(self.font()) # 重置字体防止过细
+            self.table.setItem(row, 0, seq_item)
             
             # 关键词
             keywords = ", ".join(trigger.get("keywords", []))
-            self.table.setItem(row, 0, QTableWidgetItem(keywords))
+            keyword_item = QTableWidgetItem(keywords)
+            keyword_item.setToolTip(keywords)  # 添加提示
+            self.table.setItem(row, 1, keyword_item)
             
             # 分类
-            self.table.setItem(row, 1, QTableWidgetItem(trigger.get("category", "")))
+            self.table.setItem(row, 2, QTableWidgetItem(trigger.get("category", "")))
             
             # 状态
             enabled = trigger.get("enabled", True)
             status_item = QTableWidgetItem("启用" if enabled else "禁用")
             status_item.setForeground(Qt.darkGreen if enabled else Qt.darkRed)
-            self.table.setItem(row, 2, status_item)
+            status_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row, 3, status_item)
             
-            # 操作按钮
+            # 操作按钮 - 使用Layout Stretch来居中，比Alignment更可靠
             action_widget = QWidget()
             action_layout = QHBoxLayout(action_widget)
-            action_layout.setContentsMargins(4, 4, 4, 4)
+            action_layout.setContentsMargins(0, 0, 0, 0)
             action_layout.setSpacing(8)
+            
+            action_layout.addStretch() # 左侧占位
             
             edit_btn = QPushButton("编辑")
             edit_btn.setFixedSize(60, 28)
-            edit_btn.setStyleSheet("background: #3b82f6; color: white; border-radius: 4px;")
+            edit_btn.setCursor(Qt.PointingHandCursor)
+            edit_btn.setStyleSheet("background: #3b82f6; color: white; border-radius: 4px; border: none;")
             edit_btn.clicked.connect(lambda checked, t=trigger: self._edit_trigger(t))
             action_layout.addWidget(edit_btn)
             
             toggle_btn = QPushButton("禁用" if enabled else "启用")
             toggle_btn.setFixedSize(60, 28)
-            toggle_btn.setStyleSheet("background: #6b7280; color: white; border-radius: 4px;")
+            toggle_btn.setCursor(Qt.PointingHandCursor)
+            toggle_btn.setStyleSheet(f"background: {'#6b7280' if enabled else '#10b981'}; color: white; border-radius: 4px; border: none;")
             toggle_btn.clicked.connect(lambda checked, t=trigger: self._toggle_trigger(t))
             action_layout.addWidget(toggle_btn)
             
             delete_btn = QPushButton("删除")
             delete_btn.setFixedSize(60, 28)
-            delete_btn.setStyleSheet("background: #ef4444; color: white; border-radius: 4px;")
+            delete_btn.setCursor(Qt.PointingHandCursor)
+            delete_btn.setStyleSheet("background: #ef4444; color: white; border-radius: 4px; border: none;")
             delete_btn.clicked.connect(lambda checked, t=trigger: self._delete_trigger(t))
             action_layout.addWidget(delete_btn)
             
-            self.table.setCellWidget(row, 3, action_widget)
+            action_layout.addStretch() # 右侧占位
+            
+            self.table.setCellWidget(row, 4, action_widget)
             
             # 隐藏ID
-            self.table.setItem(row, 4, QTableWidgetItem(trigger.get("id", "")))
+            self.table.setItem(row, 5, QTableWidgetItem(trigger.get("id", "")))
     
     def _add_trigger(self):
         """添加规则"""

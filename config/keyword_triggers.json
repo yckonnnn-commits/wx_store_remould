@@ -1,33 +1,33 @@
 {
-    "version": 1,
-    "updated_at": "2026-02-09T14:32:00",
-    "triggers": [
-        {
-            "id": "contact_trigger_1",
-            "keywords": [
-                "电话",
-                "联系方式",
-                "怎么联系",
-                "电话号码",
-                "手机号",
-                "微信号"
-            ],
-            "category": "联系方式",
-            "enabled": true
-        },
-        {
-            "id": "address_trigger_1",
-            "keywords": [
-                "地址",
-                "位置",
-                "在哪",
-                "哪里",
-                "门店",
-                "店铺地址",
-                "怎么去"
-            ],
-            "category": "店铺地址",
-            "enabled": true
-        }
-    ]
+  "version": 1,
+  "updated_at": "2026-02-09T16:27:05.818505",
+  "triggers": [
+    {
+      "keywords": [
+        "电话",
+        "联系方式",
+        "怎么联系",
+        "电话号码",
+        "手机号",
+        "微信号"
+      ],
+      "category": "联系方式",
+      "enabled": true,
+      "id": "contact_trigger_1"
+    },
+    {
+      "id": "address_trigger_1",
+      "keywords": [
+        "地址",
+        "位置",
+        "在哪",
+        "哪里",
+        "门店",
+        "店铺地址",
+        "怎么去"
+      ],
+      "category": "店铺地址",
+      "enabled": true
+    }
+  ]
 }

@@ -44,10 +44,10 @@ class BrowserTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0) # No margin for full browser feel
         layout.setSpacing(0)
         
-        # Container with margin to simulate the "floating" window inside content area
+        # Container - full width browser view
         container = QWidget()
         container_layout = QVBoxLayout(container)
-        container_layout.setContentsMargins(24, 24, 24, 24)
+        container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
 
         # Browser Chrome (Header)

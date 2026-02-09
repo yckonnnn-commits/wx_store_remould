@@ -330,6 +330,11 @@ class MessageProcessor(QObject):
 
     def _on_reply_prepared(self, session_id: str, reply_text: str):
         """回复准备就绪"""
+        # 如果正在手动处理回复（通过 _generate_reply_from_history），跳过信号触发的回复
+        if self._is_processing_reply:
+            self.log_message.emit(f"⏸️ 已在手动处理回复，跳过信号触发")
+            return
+        
         # 延迟3秒发送，模拟人工回复，避免被检测
         self.log_message.emit(f"⏳ 等待3秒后发送回复...")
         QTimer.singleShot(3000, lambda: self._send_reply(session_id, reply_text))
@@ -591,30 +596,22 @@ class MessageProcessor(QObject):
 
         self.log_message.emit(f"📤 发送聊天记录给大模型（共{len(conversation_history)}条）...")
 
-        # 使用协调器生成回复（避免直接调用LLM导致重复发送）
+        # 使用协调器生成回复
         self.log_message.emit(f"⏳ 大模型处理中...")
-
-        # 临时断开 coordinator 的 reply_prepared 信号，避免重复发送
-        # 因为 coordinate_reply 会同时触发 callback 和 reply_prepared 信号
-        self.coordinator.reply_prepared.disconnect(self._on_reply_prepared)
 
         def on_reply(success, reply_text):
             if success and reply_text:
                 self.log_message.emit(f"✅ 大模型回复完成")
                 self.log_message.emit(f"💬 回复内容: {reply_text[:100]}...")
-                # 发送回复
-                self._send_reply(session.session_id, reply_text)
+                # 添加3秒延迟后发送回复
+                self.log_message.emit(f"⏳ 等待3秒后发送回复...")
+                QTimer.singleShot(3000, lambda: self._send_reply_and_reset(session.session_id, reply_text))
             else:
                 self.log_message.emit(f"❌ 大模型生成回复失败")
-            # 重置处理状态
-            self._is_processing_reply = False
-            # 恢复 coordinator 的信号连接
-            try:
-                self.coordinator.reply_prepared.connect(self._on_reply_prepared)
-            except:
-                pass
+                # 重置处理状态
+                self._is_processing_reply = False
 
-        # 调用协调器
+        # 调用协调器（不使用 reply_prepared 信号，只使用 callback）
         success = self.coordinator.coordinate_reply(
             session_id=session.session_id,
             user_message=latest_message,
@@ -624,11 +621,12 @@ class MessageProcessor(QObject):
         if not success:
             self.log_message.emit(f"⏸️ 协调器未启动回复流程（可能触发频率限制）")
             self._is_processing_reply = False
-            # 恢复 coordinator 的信号连接
-            try:
-                self.coordinator.reply_prepared.connect(self._on_reply_prepared)
-            except:
-                pass
+    
+    def _send_reply_and_reset(self, session_id: str, reply_text: str):
+        """发送回复并重置处理状态"""
+        self._send_reply(session_id, reply_text)
+        # 延迟重置处理状态，等待发送完成
+        QTimer.singleShot(2000, lambda: setattr(self, '_is_processing_reply', False))
 
     def test_grab(self, callback: Callable = None):
         """测试抓取功能"""
