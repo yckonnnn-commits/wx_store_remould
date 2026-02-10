@@ -5,6 +5,7 @@
 
 import json
 import random
+import re
 from pathlib import Path
 from typing import Callable, Optional
 from PySide6.QtCore import QObject, Signal, QTimer
@@ -54,6 +55,8 @@ class MessageProcessor(QObject):
         self._address_image_index = {}  # {store_key: [image_path, ...]}
         self._user_image_sent = {}  # {user_hash: {category: count}}
         self._user_address_image_sent_count = {}  # {user_hash: count}
+        self._user_video_state = {}  # {user_hash: {"armed": bool, "replied_count": int, "video_sent": bool}}
+        self._user_sent_reply_texts = {}  # {user_hash: set(normalized_reply_text)}
         self._pending_post_reply_media = {}  # {session_id: {"type": "address_image", "path": str, "user_hash": str}}
         self._load_keyword_config()
 
@@ -149,6 +152,31 @@ class MessageProcessor(QObject):
     def _get_user_hash(self, user_name: str) -> str:
         import hashlib
         return hashlib.md5(user_name.encode()).hexdigest()[:8]
+
+    def _get_user_hash_by_session(self, session_id: str) -> Optional[str]:
+        """根据会话ID获取用户哈希"""
+        session = self.sessions.get_session(session_id)
+        if not session or not session.user_name:
+            return None
+        return self._get_user_hash(session.user_name)
+
+    def _ensure_user_video_state(self, user_hash: str) -> dict:
+        """确保用户视频状态存在"""
+        if user_hash not in self._user_video_state:
+            self._user_video_state[user_hash] = {
+                "armed": False,
+                "replied_count": 0,
+                "video_sent": False
+            }
+        return self._user_video_state[user_hash]
+
+    def _format_video_state(self, user_hash: str) -> str:
+        """格式化用户视频状态日志"""
+        state = self._ensure_user_video_state(user_hash)
+        return (
+            f"user={user_hash}, armed={state.get('armed', False)}, "
+            f"replied_count={state.get('replied_count', 0)}, video_sent={state.get('video_sent', False)}"
+        )
 
     def reload_keyword_config(self):
         """公开方法：重新加载关键词与图片分类配置"""
@@ -376,7 +404,14 @@ class MessageProcessor(QObject):
                 self.log_message.emit(f"🗺️ 已识别门店[{extra.get('target_store')}]，本轮文字回复后发送地址图片")
             else:
                 self.log_message.emit(f"🖼️ 触发关键词 [{triggered_category}]，发送图片")
-                self._send_image(image_path)
+                self._send_image(
+                    image_path,
+                    media_meta={
+                        "type": "category_image",
+                        "category": triggered_category,
+                        "user_hash": extra.get("user_hash", "")
+                    }
+                )
                 return
         elif self._has_recent_address_context(session_id):
             self._try_queue_address_image(session_id, user_name, user_message)
@@ -419,10 +454,30 @@ class MessageProcessor(QObject):
 
     def _send_reply(self, session_id: str, reply_text: str):
         """发送回复"""
+        user_hash = self._get_user_hash_by_session(session_id)
+        normalized_reply = self._normalize_outgoing_text(reply_text)
+        if user_hash and normalized_reply:
+            sent_texts = self._user_sent_reply_texts.setdefault(user_hash, set())
+            if normalized_reply in sent_texts:
+                self.log_message.emit(
+                    f"⏸️ 已拦截重复回复（同一用户同一内容）: session={session_id}, user={user_hash}"
+                )
+                stale_pending = self._pending_post_reply_media.pop(session_id, None)
+                if stale_pending:
+                    self.log_message.emit(
+                        f"🧹 已清理本轮待发送媒体，避免重复链路继续触发: session={session_id}"
+                    )
+                QTimer.singleShot(300, self._reset_poll_state)
+                return
+
         def on_sent(success, result):
             if success:
                 self.log_message.emit(f"✅ 回复已发送: {reply_text[:50]}...")
+                if user_hash and normalized_reply:
+                    sent_texts = self._user_sent_reply_texts.setdefault(user_hash, set())
+                    sent_texts.add(normalized_reply)
                 self.reply_sent.emit(session_id, reply_text)
+                video_user_hash = self._mark_reply_progress_for_video(session_id)
                 pending_media = self._pending_post_reply_media.pop(session_id, None)
                 if pending_media and pending_media.get("type") == "address_image" and pending_media.get("path"):
                     self.log_message.emit("🖼️ 本轮地址回复完成，发送对应门店图片")
@@ -433,6 +488,8 @@ class MessageProcessor(QObject):
                             "user_hash": pending_media.get("user_hash", "")
                         }
                     )
+                    return
+                if video_user_hash and self._maybe_send_delayed_video(session_id, video_user_hash):
                     return
             else:
                 self.log_message.emit(f"❌ 发送失败")
@@ -450,6 +507,29 @@ class MessageProcessor(QObject):
                     user_hash = media_meta.get("user_hash", "")
                     if user_hash:
                         self._user_address_image_sent_count[user_hash] = self._user_address_image_sent_count.get(user_hash, 0) + 1
+                        self.log_message.emit(
+                            f"🧭 地址图发送成功，触发延迟视频激活: user={user_hash}, "
+                            f"address_sent_count={self._user_address_image_sent_count[user_hash]}"
+                        )
+                        self._arm_delayed_video(user_hash)
+                if media_meta and media_meta.get("type") == "category_image":
+                    category = media_meta.get("category", "")
+                    user_hash = media_meta.get("user_hash", "")
+                    if user_hash and category in ("联系方式", "店铺地址"):
+                        self.log_message.emit(
+                            f"🧭 分类图发送成功，触发延迟视频激活: user={user_hash}, category={category}"
+                        )
+                        self._arm_delayed_video(user_hash)
+                if media_meta and media_meta.get("type") == "delayed_video":
+                    user_hash = media_meta.get("user_hash", "")
+                    if user_hash:
+                        state = self._ensure_user_video_state(user_hash)
+                        state["video_sent"] = True
+                        state["armed"] = False
+                        self.log_message.emit(
+                            f"🎬 延迟视频发送成功，本用户不再重复发送视频: "
+                            f"{self._format_video_state(user_hash)}"
+                        )
                 # 详细记录发送结果
                 if isinstance(result, dict):
                     # 显示所有关键信息
@@ -471,6 +551,15 @@ class MessageProcessor(QObject):
                 else:
                     self.log_message.emit(f"🖼️ 图片发送结果: {result}")
             else:
+                if media_meta and media_meta.get("type") == "delayed_video":
+                    user_hash = media_meta.get("user_hash", "")
+                    if user_hash:
+                        state = self._ensure_user_video_state(user_hash)
+                        if not state.get("video_sent", False):
+                            state["armed"] = True
+                            self.log_message.emit(
+                                f"🎬 延迟视频发送失败，恢复待发送状态: {self._format_video_state(user_hash)}"
+                            )
                 # 详细记录失败原因
                 if isinstance(result, dict):
                     error = result.get('error', 'unknown')
@@ -519,6 +608,10 @@ class MessageProcessor(QObject):
             if not matched:
                 continue
 
+            if self._is_video_category(category):
+                self.log_message.emit("ℹ️ 视频素材关键词已命中，但已改为延迟触发，跳过即时发送")
+                continue
+
             if category == "店铺地址":
                 route = self.knowledge.resolve_store_recommendation(user_message)
                 target_store = route.get("target_store", "unknown")
@@ -527,8 +620,8 @@ class MessageProcessor(QObject):
                     return None, None, {"address_route": route, "address_pending": False}
 
                 sent_count = self._user_address_image_sent_count.get(user_hash, 0)
-                if sent_count >= 5:
-                    self.log_message.emit("⏸️ 当前用户地址图片已达上限（5次），仅发送文字回复")
+                if sent_count >= 1:
+                    self.log_message.emit("⏸️ 当前用户地址图片已达上限（1次），仅发送文字回复")
                     return None, None, {"address_route": route, "address_pending": False}
 
                 image_path = self._pick_address_image_for_store(target_store)
@@ -558,7 +651,10 @@ class MessageProcessor(QObject):
             # 记录已发送
             self._user_image_sent[user_hash][category] = sent_count + 1
             
-            return category, image_path, {}
+            return category, image_path, {
+                "user_hash": user_hash,
+                "category": category
+            }
         
         return None, None, {}
 
@@ -598,8 +694,8 @@ class MessageProcessor(QObject):
 
         user_hash = self._get_user_hash(user_name)
         sent_count = self._user_address_image_sent_count.get(user_hash, 0)
-        if sent_count >= 5:
-            self.log_message.emit("⏸️ 当前用户地址图片已达上限（5次），仅发送文字回复")
+        if sent_count >= 1:
+            self.log_message.emit("⏸️ 当前用户地址图片已达上限（1次），仅发送文字回复")
             return False
 
         image_path = self._pick_address_image_for_store(target_store)
@@ -634,9 +730,133 @@ class MessageProcessor(QObject):
         
         return random.choice(category_images)
 
+    def _pick_video_media(self) -> Optional[str]:
+        """从视频素材分类选择媒体，优先视频文件"""
+        image_dir = Path("images")
+        if not image_dir.exists():
+            return None
+
+        media_candidates = []
+        video_candidates = []
+        video_exts = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".wmv", ".flv", ".webm"}
+        for filename, category in self._image_categories.items():
+            if category != "视频素材":
+                continue
+            media_path = image_dir / filename
+            if not media_path.exists():
+                continue
+            abs_path = str(media_path.resolve())
+            media_candidates.append(abs_path)
+            if media_path.suffix.lower() in video_exts:
+                video_candidates.append(abs_path)
+
+        if video_candidates:
+            return random.choice(video_candidates)
+        if media_candidates:
+            return random.choice(media_candidates)
+        return None
+
+    def _is_video_category(self, category: str) -> bool:
+        """是否视频素材分类"""
+        return category == "视频素材"
+
+    def _arm_delayed_video(self, user_hash: str):
+        """激活用户延迟视频发送状态（重复触发时重置计数）"""
+        if not user_hash:
+            return
+        state = self._ensure_user_video_state(user_hash)
+        if state.get("video_sent", False):
+            self.log_message.emit(
+                f"🎬 用户已发过延迟视频，本次不再激活: {self._format_video_state(user_hash)}"
+            )
+            return
+        was_armed = state.get("armed", False)
+        prev_count = state.get("replied_count", 0)
+        state["armed"] = True
+        state["replied_count"] = 0
+        self.log_message.emit(
+            "🎬 已激活延迟视频发送（联系方式/地址图成功后）: "
+            f"user={user_hash}, reset={was_armed}, prev_count={prev_count}, "
+            f"{self._format_video_state(user_hash)}"
+        )
+
+    def _mark_reply_progress_for_video(self, session_id: str) -> Optional[str]:
+        """记录该会话一次成功回复，推进延迟视频计数"""
+        user_hash = self._get_user_hash_by_session(session_id)
+        if not user_hash:
+            self.log_message.emit(f"🎬 延迟视频计数跳过：无法从会话获取用户信息 session={session_id}")
+            return None
+
+        state = self._ensure_user_video_state(user_hash)
+        if state.get("video_sent", False) or not state.get("armed", False):
+            self.log_message.emit(
+                f"🎬 延迟视频计数不推进: session={session_id}, {self._format_video_state(user_hash)}"
+            )
+            return user_hash
+
+        state["replied_count"] = state.get("replied_count", 0) + 1
+        self.log_message.emit(
+            f"🎬 延迟视频计数 +1: session={session_id}, progress={state['replied_count']}/2, "
+            f"{self._format_video_state(user_hash)}"
+        )
+        return user_hash
+
+    def _maybe_send_delayed_video(self, session_id: str, user_hash: str) -> bool:
+        """达到阈值后发送延迟视频"""
+        if not user_hash:
+            return False
+
+        state = self._ensure_user_video_state(user_hash)
+        if state.get("video_sent", False):
+            self.log_message.emit(
+                f"🎬 延迟视频发送检查：已发送过，跳过 session={session_id}, {self._format_video_state(user_hash)}"
+            )
+            return False
+        if not state.get("armed", False):
+            self.log_message.emit(
+                f"🎬 延迟视频发送检查：未激活，跳过 session={session_id}, {self._format_video_state(user_hash)}"
+            )
+            return False
+        if state.get("replied_count", 0) < 2:
+            self.log_message.emit(
+                f"🎬 延迟视频发送检查：计数不足，跳过 session={session_id}, {self._format_video_state(user_hash)}"
+            )
+            return False
+
+        media_path = self._pick_video_media()
+        if not media_path:
+            self.log_message.emit(
+                f"⚠️ 未找到可发送的视频素材，保留延迟发送状态: session={session_id}, "
+                f"{self._format_video_state(user_hash)}"
+            )
+            return False
+
+        # 防止同一轮内重复触发发送
+        state["armed"] = False
+        self.log_message.emit(
+            f"🎬 达到延迟发送条件，准备发送视频素材: session={session_id}, path={media_path}, "
+            f"{self._format_video_state(user_hash)}"
+        )
+        self._send_image(
+            media_path,
+            media_meta={
+                "type": "delayed_video",
+                "user_hash": user_hash,
+                "session_id": session_id
+            }
+        )
+        return True
+
     def _reset_poll_state(self):
         """重置轮询状态"""
         self._poll_inflight = False
+
+    def _normalize_outgoing_text(self, text: str) -> str:
+        """标准化回复文本用于去重比较"""
+        if not text:
+            return ""
+        normalized = re.sub(r"\s+", "", text).strip()
+        return normalized
 
     def force_check(self):
         """强制检查一次"""
@@ -652,6 +872,7 @@ class MessageProcessor(QObject):
         def on_data(success, result):
             if not success:
                 self.log_message.emit("❌ 抓取聊天记录失败")
+                self._reset_poll_state()
                 return
             
             try:
@@ -672,6 +893,7 @@ class MessageProcessor(QObject):
                 
                 if not messages:
                     self.log_message.emit(f"⚠️ 用户 {user_name} 暂无聊天记录")
+                    self._reset_poll_state()
                     return
                 
                 # 格式化输出聊天记录
@@ -700,6 +922,7 @@ class MessageProcessor(QObject):
                     # 关键检查：最后一条消息必须是用户发的才回复
                     if messages and not messages[-1].get("is_user", False):
                         self.log_message.emit(f"⏸️ 最后一条消息不是用户发的，跳过自动回复")
+                        self._reset_poll_state()
                         return
 
                     # 提取最新的用户消息
@@ -719,7 +942,14 @@ class MessageProcessor(QObject):
                                 self.log_message.emit(f"🗺️ 已识别门店[{extra.get('target_store')}]，本轮文字回复后发送地址图片")
                             else:
                                 self.log_message.emit(f"🖼️ 触发关键词 [{triggered_category}]，发送图片")
-                                self._send_image(image_path)
+                                self._send_image(
+                                    image_path,
+                                    media_meta={
+                                        "type": "category_image",
+                                        "category": triggered_category,
+                                        "user_hash": extra.get("user_hash", "")
+                                    }
+                                )
                                 return
                         else:
                             session_id = f"user_{hash(user_name)}"
@@ -728,9 +958,12 @@ class MessageProcessor(QObject):
                         
                         self.log_message.emit(f"🤖 准备调用大模型生成回复...")
                         self._generate_reply_from_history(user_name, messages, latest_user_msg)
+                        return
+                self._reset_poll_state()
                 
             except Exception as e:
                 self.log_message.emit(f"❌ 解析聊天记录错误: {e}")
+                self._reset_poll_state()
         
         self.browser.grab_chat_data(on_data)
     
@@ -787,6 +1020,7 @@ class MessageProcessor(QObject):
                 self.log_message.emit(f"❌ 大模型生成回复失败")
                 # 重置处理状态
                 self._is_processing_reply = False
+                self._reset_poll_state()
 
         # 调用协调器（不使用 reply_prepared 信号，只使用 callback）
         success = self.coordinator.coordinate_reply(
@@ -799,6 +1033,7 @@ class MessageProcessor(QObject):
         if not success:
             self.log_message.emit(f"⏸️ 协调器未启动回复流程（可能触发频率限制）")
             self._is_processing_reply = False
+            self._reset_poll_state()
     
     def _send_reply_and_reset(self, session_id: str, reply_text: str):
         """发送回复并重置处理状态"""

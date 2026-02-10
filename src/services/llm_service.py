@@ -253,7 +253,7 @@ class LLMService(QObject):
         super().__init__()
         self.config_manager = config_manager
         self._workers: Dict[str, LLMWorker] = {}
-        self._system_prompt = """你是艾耐儿假发的专业顾问，服务中老年女性客户群体。你的定位是"私人发型顾问"，不只是卖假发，更是为客户量身定制自信。
+        self._system_prompt = """你是艾耐儿假发的马老师助理，服务中老年女性客户群体。你的定位是"马老师私人发型助理"，不只是卖假发，更是为客户量身定制自信。
 
 【重要提示】
 - 你会收到完整的聊天记录作为上下文，帮助你理解客户的关注点和需求
