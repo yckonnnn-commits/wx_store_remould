@@ -78,6 +78,27 @@ class ReplyCoordinator(QObject):
                 self.reply_prepared.emit(session_id, kb_answer)
                 return True
 
+            route = self.knowledge_service.resolve_store_recommendation(user_message)
+            target_store = route.get("target_store", "unknown")
+            if target_store != "unknown" and (
+                self.knowledge_service.is_address_query(user_message) or self._has_recent_address_context(session)
+            ):
+                llm_user_message = (
+                    f"客户消息：{user_message}\n"
+                    f"地址路由结果：city={route.get('city')}, target_store={target_store}, reason={route.get('reason')}\n"
+                    "请根据 target_store 做就近门店推荐回复，语气自然亲切，1条完整回复。"
+                    "注意：只能在已知门店范围内表达，不可新增或改写门店。"
+                )
+                return self._call_llm(session_id, llm_user_message, callback, conversation_history)
+
+            if self.knowledge_service.is_address_query(user_message):
+                follow_up = "姐姐您大概在什么区/城市呢？我帮您就近安排最近的门店，买不买都没关系。"
+                self._handle_reply(session_id, follow_up, source="knowledge")
+                if callback:
+                    callback(True, follow_up)
+                self.reply_prepared.emit(session_id, follow_up)
+                return True
+
         # 知识库未匹配，调用LLM
         return self._call_llm(session_id, user_message, callback, conversation_history)
 
@@ -176,3 +197,12 @@ class ReplyCoordinator(QObject):
     def set_use_knowledge_first(self, enabled: bool):
         """设置是否优先使用知识库"""
         self.use_knowledge_first = enabled
+
+    def _has_recent_address_context(self, session: ChatSession) -> bool:
+        """近期是否处于地址相关对话上下文"""
+        recent = session.get_recent_messages(8)
+        for msg in recent:
+            text = msg.get("text", "")
+            if "门店" in text or "地址" in text or "哪个区" in text or "在哪个城市" in text:
+                return True
+        return False

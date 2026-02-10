@@ -50,7 +50,11 @@ class MessageProcessor(QObject):
         # 关键词触发配置
         self._keyword_triggers = []
         self._image_categories = {}  # {filename: category}
+        self._image_cities = {}  # {filename: city}
+        self._address_image_index = {}  # {store_key: [image_path, ...]}
         self._user_image_sent = {}  # {user_hash: {category: count}}
+        self._user_address_image_sent_count = {}  # {user_hash: count}
+        self._pending_post_reply_media = {}  # {session_id: {"type": "address_image", "path": str, "user_hash": str}}
         self._load_keyword_config()
 
         # 定时器
@@ -74,6 +78,8 @@ class MessageProcessor(QObject):
         try:
             self._keyword_triggers = []
             self._image_categories = {}
+            self._image_cities = {}
+            self._address_image_index = {}
 
             # 加载触发规则
             triggers_file = Path("config/keyword_triggers.json")
@@ -88,14 +94,61 @@ class MessageProcessor(QObject):
                 with open(categories_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     images_data = data.get("images", {})
+                    self._image_cities = data.get("cities", {}) or {}
                     # 转换为 filename -> category 映射
                     for category, filenames in images_data.items():
                         for filename in filenames:
                             self._image_categories[filename] = category
+            self._rebuild_address_image_index()
                     
             self.log_message.emit(f"✅ 已加载 {len(self._keyword_triggers)} 条关键词触发规则")
         except Exception as e:
             self.log_message.emit(f"⚠️ 加载关键词配置失败: {str(e)}")
+
+    def _rebuild_address_image_index(self):
+        """根据分类+城市+文件名重建地址图片索引"""
+        index = {
+            "beijing_chaoyang": [],
+            "sh_xuhui": [],
+            "sh_jingan": [],
+            "sh_hongkou": [],
+            "sh_wujiaochang": [],
+            "sh_renmin": [],
+        }
+        image_dir = Path("images")
+        for filename, category in self._image_categories.items():
+            if category != "店铺地址":
+                continue
+            img_path = image_dir / filename
+            if not img_path.exists():
+                continue
+
+            city = self._image_cities.get(filename, "")
+            lower_name = filename.lower()
+            abs_path = str(img_path.resolve())
+
+            if city == "北京":
+                index["beijing_chaoyang"].append(abs_path)
+                continue
+
+            if "徐汇" in filename:
+                index["sh_xuhui"].append(abs_path)
+            elif "静安" in filename:
+                index["sh_jingan"].append(abs_path)
+            elif "虹口" in filename:
+                index["sh_hongkou"].append(abs_path)
+            elif "五角场" in filename or "杨浦" in filename:
+                index["sh_wujiaochang"].append(abs_path)
+            elif "人广" in filename or "人民广场" in filename or "黄浦" in filename:
+                index["sh_renmin"].append(abs_path)
+            elif city == "上海":
+                index["sh_renmin"].append(abs_path)
+
+        self._address_image_index = index
+
+    def _get_user_hash(self, user_name: str) -> str:
+        import hashlib
+        return hashlib.md5(user_name.encode()).hexdigest()[:8]
 
     def reload_keyword_config(self):
         """公开方法：重新加载关键词与图片分类配置"""
@@ -305,18 +358,28 @@ class MessageProcessor(QObject):
 
     def _generate_and_send_reply(self, user_name: str, user_message: str):
         """生成并发送回复 - 优先检查关键词触发"""
-        # 检查关键词触发
-        triggered_category, image_path = self._check_keyword_trigger(user_name, user_message)
-        if triggered_category and image_path:
-            self.log_message.emit(f"🖼️ 触发关键词 [{triggered_category}]，发送图片")
-            self._send_image(image_path)
-            return
-
-        # 获取或创建会话
+        session_id = f"user_{hash(user_name)}"
         session = self.sessions.get_or_create_session(
-            session_id=f"user_{hash(user_name)}",
+            session_id=session_id,
             user_name=user_name
         )
+
+        # 检查关键词触发
+        triggered_category, image_path, extra = self._check_keyword_trigger(user_name, user_message)
+        if triggered_category and image_path:
+            if triggered_category == "店铺地址" and extra.get("address_pending"):
+                self._pending_post_reply_media[session_id] = {
+                    "type": "address_image",
+                    "path": image_path,
+                    "user_hash": extra.get("user_hash", "")
+                }
+                self.log_message.emit(f"🗺️ 已识别门店[{extra.get('target_store')}]，本轮文字回复后发送地址图片")
+            else:
+                self.log_message.emit(f"🖼️ 触发关键词 [{triggered_category}]，发送图片")
+                self._send_image(image_path)
+                return
+        elif self._has_recent_address_context(session_id):
+            self._try_queue_address_image(session_id, user_name, user_message)
 
         # 记录用户消息
         self.sessions.add_message(session.session_id, user_message, is_user=True)
@@ -360,6 +423,17 @@ class MessageProcessor(QObject):
             if success:
                 self.log_message.emit(f"✅ 回复已发送: {reply_text[:50]}...")
                 self.reply_sent.emit(session_id, reply_text)
+                pending_media = self._pending_post_reply_media.pop(session_id, None)
+                if pending_media and pending_media.get("type") == "address_image" and pending_media.get("path"):
+                    self.log_message.emit("🖼️ 本轮地址回复完成，发送对应门店图片")
+                    self._send_image(
+                        pending_media["path"],
+                        media_meta={
+                            "type": "address_image",
+                            "user_hash": pending_media.get("user_hash", "")
+                        }
+                    )
+                    return
             else:
                 self.log_message.emit(f"❌ 发送失败")
 
@@ -368,10 +442,14 @@ class MessageProcessor(QObject):
 
         self.browser.send_message(reply_text, on_sent)
 
-    def _send_image(self, image_path: str):
+    def _send_image(self, image_path: str, media_meta: Optional[dict] = None):
         """发送图片"""
         def on_sent(success, result):
             if success:
+                if media_meta and media_meta.get("type") == "address_image":
+                    user_hash = media_meta.get("user_hash", "")
+                    if user_hash:
+                        self._user_address_image_sent_count[user_hash] = self._user_address_image_sent_count.get(user_hash, 0) + 1
                 # 详细记录发送结果
                 if isinstance(result, dict):
                     # 显示所有关键信息
@@ -417,17 +495,15 @@ class MessageProcessor(QObject):
             return None
         return str(random.choice(candidates).resolve())
     
-    def _check_keyword_trigger(self, user_name: str, user_message: str) -> tuple[Optional[str], Optional[str]]:
+    def _check_keyword_trigger(self, user_name: str, user_message: str) -> tuple[Optional[str], Optional[str], dict]:
         """
         检查是否触发关键词，并检查用户限制
-        Returns: (category, image_path) or (None, None)
+        Returns: (category, image_path, extra)
         """
         if not user_message:
-            return None, None
-        
-        # 生成用户标识
-        import hashlib
-        user_hash = hashlib.md5(user_name.encode()).hexdigest()[:8]
+            return None, None, {}
+
+        user_hash = self._get_user_hash(user_name)
         
         # 初始化用户记录
         if user_hash not in self._user_image_sent:
@@ -442,6 +518,30 @@ class MessageProcessor(QObject):
             matched = any(keyword in user_message for keyword in keywords)
             if not matched:
                 continue
+
+            if category == "店铺地址":
+                route = self.knowledge.resolve_store_recommendation(user_message)
+                target_store = route.get("target_store", "unknown")
+                if target_store == "unknown":
+                    self.log_message.emit("ℹ️ 地址意图已触发，但尚未识别到城市/区域，先走文字引导")
+                    return None, None, {"address_route": route, "address_pending": False}
+
+                sent_count = self._user_address_image_sent_count.get(user_hash, 0)
+                if sent_count >= 5:
+                    self.log_message.emit("⏸️ 当前用户地址图片已达上限（5次），仅发送文字回复")
+                    return None, None, {"address_route": route, "address_pending": False}
+
+                image_path = self._pick_address_image_for_store(target_store)
+                if not image_path:
+                    self.log_message.emit(f"⚠️ 目标门店[{target_store}]无可用地址图片，跳过发图")
+                    return None, None, {"address_route": route, "address_pending": False}
+
+                return category, image_path, {
+                    "address_route": route,
+                    "address_pending": True,
+                    "user_hash": user_hash,
+                    "target_store": target_store,
+                }
             
             # 检查用户是否已达到该分类的限制
             sent_count = self._user_image_sent[user_hash].get(category, 0)
@@ -458,9 +558,62 @@ class MessageProcessor(QObject):
             # 记录已发送
             self._user_image_sent[user_hash][category] = sent_count + 1
             
-            return category, image_path
+            return category, image_path, {}
         
-        return None, None
+        return None, None, {}
+
+    def _pick_address_image_for_store(self, target_store: str) -> Optional[str]:
+        """按目标门店随机选取地址图片，若池为空按城市兜底"""
+        pool = self._address_image_index.get(target_store, [])
+        if pool:
+            return random.choice(pool)
+
+        if target_store.startswith("sh_"):
+            fallback = self._address_image_index.get("sh_renmin", [])
+            if fallback:
+                return random.choice(fallback)
+        if target_store == "beijing_chaoyang":
+            fallback = self._address_image_index.get("beijing_chaoyang", [])
+            if fallback:
+                return random.choice(fallback)
+        return None
+
+    def _has_recent_address_context(self, session_id: str) -> bool:
+        """当前会话近期是否在聊地址相关"""
+        session = self.sessions.get_session(session_id)
+        if not session:
+            return False
+        for msg in session.get_recent_messages(8):
+            text = msg.get("text", "")
+            if "地址" in text or "门店" in text or "哪个区" in text or "哪个城市" in text or "就近安排" in text:
+                return True
+        return False
+
+    def _try_queue_address_image(self, session_id: str, user_name: str, user_message: str) -> bool:
+        """尝试根据用户地区在本轮回复后补发地址图片"""
+        route = self.knowledge.resolve_store_recommendation(user_message)
+        target_store = route.get("target_store", "unknown")
+        if target_store == "unknown":
+            return False
+
+        user_hash = self._get_user_hash(user_name)
+        sent_count = self._user_address_image_sent_count.get(user_hash, 0)
+        if sent_count >= 5:
+            self.log_message.emit("⏸️ 当前用户地址图片已达上限（5次），仅发送文字回复")
+            return False
+
+        image_path = self._pick_address_image_for_store(target_store)
+        if not image_path:
+            self.log_message.emit(f"⚠️ 目标门店[{target_store}]无可用地址图片，跳过发图")
+            return False
+
+        self._pending_post_reply_media[session_id] = {
+            "type": "address_image",
+            "path": image_path,
+            "user_hash": user_hash
+        }
+        self.log_message.emit(f"🗺️ 已识别门店[{target_store}]，本轮文字回复后发送地址图片")
+        return True
     
     def _pick_category_image(self, category: str) -> Optional[str]:
         """从指定分类中随机选择一张图片"""
@@ -552,12 +705,26 @@ class MessageProcessor(QObject):
                     # 提取最新的用户消息
                     latest_user_msg = user_messages[-1].get("text", "")
                     if latest_user_msg:
+                        session_id = f"user_{hash(user_name)}"
+                        self.sessions.get_or_create_session(session_id=session_id, user_name=user_name)
                         # 检查关键词触发
-                        triggered_category, image_path = self._check_keyword_trigger(user_name, latest_user_msg)
+                        triggered_category, image_path, extra = self._check_keyword_trigger(user_name, latest_user_msg)
                         if triggered_category and image_path:
-                            self.log_message.emit(f"🖼️ 触发关键词 [{triggered_category}]，发送图片")
-                            self._send_image(image_path)
-                            return
+                            if triggered_category == "店铺地址" and extra.get("address_pending"):
+                                self._pending_post_reply_media[session_id] = {
+                                    "type": "address_image",
+                                    "path": image_path,
+                                    "user_hash": extra.get("user_hash", "")
+                                }
+                                self.log_message.emit(f"🗺️ 已识别门店[{extra.get('target_store')}]，本轮文字回复后发送地址图片")
+                            else:
+                                self.log_message.emit(f"🖼️ 触发关键词 [{triggered_category}]，发送图片")
+                                self._send_image(image_path)
+                                return
+                        else:
+                            session_id = f"user_{hash(user_name)}"
+                            if self._has_recent_address_context(session_id):
+                                self._try_queue_address_image(session_id, user_name, latest_user_msg)
                         
                         self.log_message.emit(f"🤖 准备调用大模型生成回复...")
                         self._generate_reply_from_history(user_name, messages, latest_user_msg)

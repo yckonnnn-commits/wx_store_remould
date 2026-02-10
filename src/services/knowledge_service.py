@@ -20,6 +20,7 @@ class KnowledgeService(QObject):
     data_imported = Signal(int)     # 数据导入 (count)
     data_exported = Signal(str)     # 数据导出 (file_path)
     search_completed = Signal(list) # 搜索完成 (results)
+    ADDRESS_KEYWORDS = ("地址", "位置", "门店", "店铺", "在哪", "哪里", "怎么去")
 
     def __init__(self, repository: KnowledgeRepository):
         super().__init__()
@@ -52,6 +53,53 @@ class KnowledgeService(QObject):
         if result:
             return result[0]  # 返回答案文本
         return None
+
+    def is_address_query(self, text: str) -> bool:
+        """是否为地址相关咨询"""
+        text = (text or "").strip()
+        return bool(text) and any(keyword in text for keyword in self.ADDRESS_KEYWORDS)
+
+    def resolve_store_recommendation(self, user_text: str) -> dict:
+        """根据用户地理位置解析推荐门店（仅路由，不生成文案）"""
+        text = (user_text or "").strip()
+        if not text:
+            return {"city": "unknown", "target_store": "unknown", "reason": "unknown"}
+
+        neg_beijing = any(k in text for k in ("不在北京", "不是北京", "不去北京"))
+        neg_shanghai = any(k in text for k in ("不在上海", "不是上海", "不去上海"))
+
+        # 北京与周边
+        if not neg_beijing and any(k in text for k in ("北京", "天津", "河北", "门头沟", "朝阳", "海淀", "丰台", "通州", "顺义")):
+            return {"city": "beijing", "target_store": "beijing_chaoyang", "reason": "jingjinji"}
+
+        # 上海区级
+        if "闵行" in text:
+            return {"city": "shanghai", "target_store": "sh_xuhui", "reason": "minhang_map"}
+        if "长宁" in text:
+            return {"city": "shanghai", "target_store": "sh_jingan", "reason": "changning_map"}
+        if "虹口" in text:
+            return {"city": "shanghai", "target_store": "sh_hongkou", "reason": "same_district"}
+        if "杨浦" in text or "五角场" in text:
+            return {"city": "shanghai", "target_store": "sh_wujiaochang", "reason": "same_district"}
+        if "黄浦" in text or "人民广场" in text or "人广" in text:
+            return {"city": "shanghai", "target_store": "sh_renmin", "reason": "same_district"}
+        if "徐汇" in text:
+            return {"city": "shanghai", "target_store": "sh_xuhui", "reason": "same_district"}
+        if "静安" in text:
+            return {"city": "shanghai", "target_store": "sh_jingan", "reason": "same_district"}
+
+        # 上海其他区
+        if not neg_shanghai and any(k in text for k in ("上海", "浦东", "宝山", "普陀", "青浦", "松江", "嘉定", "奉贤", "金山", "崇明")):
+            return {"city": "shanghai", "target_store": "sh_renmin", "reason": "fallback_renmin"}
+
+        # 江浙沪周边默认推荐上海
+        if any(k in text for k in (
+            "江苏", "浙江", "苏州", "无锡", "常州", "南通", "南京", "宁波",
+            "杭州", "绍兴", "嘉兴", "湖州", "金华", "温州"
+        )):
+            return {"city": "shanghai", "target_store": "sh_renmin", "reason": "jiangzhehu"}
+
+        return {"city": "unknown", "target_store": "unknown", "reason": "unknown"}
 
     def add_item(self, question: str, answer: str, category: str = "", tags: Optional[List[str]] = None) -> Optional[str]:
         """添加知识库条目
