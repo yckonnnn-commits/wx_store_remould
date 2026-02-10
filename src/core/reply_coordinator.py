@@ -3,7 +3,7 @@
 协调知识库匹配和AI回复生成
 """
 
-from typing import Optional, Callable
+from typing import Optional, Callable, List, Dict
 from PySide6.QtCore import QObject, Signal
 
 from ..services.knowledge_service import KnowledgeService
@@ -37,7 +37,8 @@ class ReplyCoordinator(QObject):
         self._pending_requests: dict = {}
 
     def coordinate_reply(self, session_id: str, user_message: str,
-                        callback: Callable = None) -> bool:
+                        callback: Callable = None,
+                        conversation_history: Optional[List[Dict]] = None) -> bool:
         """协调回复生成
 
         流程：
@@ -49,6 +50,7 @@ class ReplyCoordinator(QObject):
             session_id: 会话ID
             user_message: 用户消息
             callback: 回调函数 (success, reply_text)
+            conversation_history: 可选对话历史（不含当前 user_message）
 
         Returns:
             是否成功启动回复流程
@@ -77,17 +79,18 @@ class ReplyCoordinator(QObject):
                 return True
 
         # 知识库未匹配，调用LLM
-        return self._call_llm(session_id, user_message, callback)
+        return self._call_llm(session_id, user_message, callback, conversation_history)
 
     def _call_llm(self, session_id: str, user_message: str,
-                  callback: Callable = None) -> bool:
+                  callback: Callable = None,
+                  conversation_history: Optional[List[Dict]] = None) -> bool:
         """调用LLM生成回复"""
         session = self.session_manager.get_session(session_id)
         if not session:
             return False
 
         # 获取对话历史
-        history = session.get_conversation_history(self.max_history_turns)
+        history = conversation_history if conversation_history is not None else session.get_conversation_history(self.max_history_turns)
 
         # 发送请求
         request_id = self.llm_service.generate_reply(

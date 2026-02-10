@@ -327,13 +327,15 @@ class MessageProcessor(QObject):
         
         # === 使用大模型生成回复 ===
         def on_reply(success, reply_text):
-            if success and reply_text:
-                self._send_reply(session.session_id, reply_text)
-            else:
+            # 成功发送统一走 reply_prepared 信号，避免重复发送
+            if not success:
                 self.log_message.emit(f"❌ 大模型生成回复失败")
                 self._poll_inflight = False
 
-        self.coordinator.coordinate_reply(session.session_id, user_message, on_reply)
+        started = self.coordinator.coordinate_reply(session.session_id, user_message, on_reply)
+        if not started:
+            self.log_message.emit("⏸️ 协调器未启动回复流程（可能触发频率限制）")
+            self._poll_inflight = False
 
     def _on_reply_prepared(self, session_id: str, reply_text: str):
         """回复准备就绪"""
@@ -592,7 +594,8 @@ class MessageProcessor(QObject):
 
         # 构建对话历史（格式化为大模型可理解的格式）
         conversation_history = []
-        for msg in chat_history[-10:]:  # 只取最近10条消息
+        history_source = chat_history[:-1] if chat_history and chat_history[-1].get("is_user", False) else chat_history
+        for msg in history_source[-10:]:  # 只取最近10条消息（不含最新用户消息）
             text = msg.get("text", "")
             is_user = msg.get("is_user", False)
 
@@ -622,7 +625,8 @@ class MessageProcessor(QObject):
         success = self.coordinator.coordinate_reply(
             session_id=session.session_id,
             user_message=latest_message,
-            callback=on_reply
+            callback=on_reply,
+            conversation_history=conversation_history
         )
 
         if not success:
