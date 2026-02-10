@@ -99,7 +99,7 @@ class MainWindow(QWidget):
             ("shop", "微信小店"),
             ("knowledge", "知识库管理"),
             ("model", "模型配置"),
-            ("images", "图片管理"),
+            ("images", "图片与视频管理"),
             ("keywords", "关键词触发图片发送")
         ]
         self.nav_buttons = {}
