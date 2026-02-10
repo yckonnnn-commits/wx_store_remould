@@ -187,9 +187,12 @@ class MainWindow(QWidget):
 
         # 图片管理日志
         self.image_management_tab.log_message.connect(self._on_log_message)
+        self.image_management_tab.categories_updated.connect(lambda _cats: self.keyword_trigger_tab._load_config())
+        self.image_management_tab.categories_updated.connect(lambda _cats: self.message_processor.reload_keyword_config())
 
         # 关键词触发日志
         self.keyword_trigger_tab.log_message.connect(self._on_log_message)
+        self.keyword_trigger_tab.config_updated.connect(self.message_processor.reload_keyword_config)
 
     def _load_wechat_store(self):
         """加载微信小店"""

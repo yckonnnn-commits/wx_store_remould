@@ -72,6 +72,9 @@ class MessageProcessor(QObject):
     def _load_keyword_config(self):
         """加载关键词触发配置"""
         try:
+            self._keyword_triggers = []
+            self._image_categories = {}
+
             # 加载触发规则
             triggers_file = Path("config/keyword_triggers.json")
             if triggers_file.exists():
@@ -93,6 +96,10 @@ class MessageProcessor(QObject):
             self.log_message.emit(f"✅ 已加载 {len(self._keyword_triggers)} 条关键词触发规则")
         except Exception as e:
             self.log_message.emit(f"⚠️ 加载关键词配置失败: {str(e)}")
+
+    def reload_keyword_config(self):
+        """公开方法：重新加载关键词与图片分类配置"""
+        self._load_keyword_config()
 
     def _on_page_loaded(self, success: bool):
         """页面加载完成"""

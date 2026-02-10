@@ -19,6 +19,7 @@ class KeywordTriggerTab(QWidget):
     """关键词触发图片发送标签页"""
     
     log_message = Signal(str)
+    config_updated = Signal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -161,6 +162,7 @@ class KeywordTriggerTab(QWidget):
                 json.dump(data, f, ensure_ascii=False, indent=2)
             
             self.log_message.emit("✅ 规则配置已保存")
+            self.config_updated.emit()
             
         except Exception as e:
             self.log_message.emit(f"❌ 保存配置失败: {str(e)}")

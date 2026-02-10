@@ -11,7 +11,7 @@ from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QMessageBox, QFileDialog,
-    QAbstractItemView, QProgressBar, QFrame, QComboBox, QDialog, QDialogButtonBox
+    QAbstractItemView, QProgressBar, QFrame, QTabBar, QInputDialog
 )
 from PySide6.QtCore import Qt, Signal, QThread, QSize
 from PySide6.QtGui import QPixmap, QIcon
@@ -91,6 +91,8 @@ class ImageManagementTab(QWidget):
     """图片管理标签页"""
     
     log_message = Signal(str)
+    categories_updated = Signal(list)
+    ALL_TAB_NAME = "全部"
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -101,12 +103,15 @@ class ImageManagementTab(QWidget):
         self.image_worker = None
         self.categories = ["联系方式", "店铺地址"]
         self.image_categories = {}  # {filename: category}
-        self.current_filter = "全部"
+        self.current_filter = self.ALL_TAB_NAME
+        self.visible_image_count = 0
         
         # 确保图片目录存在
         self.image_dir.mkdir(parents=True, exist_ok=True)
         
         self._load_categories()
+        if self.current_filter != self.ALL_TAB_NAME and self.current_filter not in self.categories:
+            self.current_filter = self.ALL_TAB_NAME
         self._setup_ui()
         self._load_images()
     
@@ -120,27 +125,9 @@ class ImageManagementTab(QWidget):
         header = self._create_header()
         layout.addWidget(header)
         
-        # 分类筛选
-        filter_layout = QHBoxLayout()
-        filter_label = QLabel("分类筛选：")
-        filter_label.setStyleSheet("font-weight: 600; color: #475569;")
-        filter_layout.addWidget(filter_label)
-        
-        self.category_filter = QComboBox()
-        self.category_filter.addItems(["全部"] + self.categories + ["未分类"])
-        self.category_filter.currentTextChanged.connect(self._on_filter_changed)
-        self.category_filter.setFixedWidth(200)
-        self.category_filter.setStyleSheet("""
-            QComboBox {
-                padding: 8px 12px;
-                border: 1px solid #e2e8f0;
-                border-radius: 6px;
-                background: white;
-            }
-        """)
-        filter_layout.addWidget(self.category_filter)
-        filter_layout.addStretch()
-        layout.addLayout(filter_layout)
+        # 分类Tab
+        tabs = self._create_tabs_bar()
+        layout.addWidget(tabs)
         
         # 图片列表面板
         image_panel = self._create_image_panel()
@@ -180,33 +167,6 @@ class ImageManagementTab(QWidget):
         self.select_all_btn.setCursor(Qt.PointingHandCursor)
         self.select_all_btn.clicked.connect(self._select_all)
         header_layout.addWidget(self.select_all_btn)
-        
-        # 快捷分类按钮
-        for category in self.categories:
-            cat_btn = QPushButton(f"设为{category}")
-            cat_btn.setObjectName("Secondary")
-            cat_btn.setCursor(Qt.PointingHandCursor)
-            cat_btn.clicked.connect(lambda checked, cat=category: self._quick_set_category(cat))
-            cat_btn.setStyleSheet("""
-                QPushButton {
-                    background: #10b981;
-                    color: white;
-                    border: none;
-                    padding: 8px 16px;
-                    border-radius: 6px;
-                    font-weight: 500;
-                }
-                QPushButton:hover {
-                    background: #059669;
-                }
-            """)
-            header_layout.addWidget(cat_btn)
-        
-        self.set_category_btn = QPushButton("更多分类")
-        self.set_category_btn.setObjectName("Secondary")
-        self.set_category_btn.setCursor(Qt.PointingHandCursor)
-        self.set_category_btn.clicked.connect(self._set_category)
-        header_layout.addWidget(self.set_category_btn)
 
         self.deselect_all_btn = QPushButton("取消选择")
         self.deselect_all_btn.setObjectName("Secondary")
@@ -233,6 +193,57 @@ class ImageManagementTab(QWidget):
         header_layout.addWidget(self.upload_btn)
 
         return header
+
+    def _create_tabs_bar(self):
+        """创建分类Tab栏"""
+        tabs_wrap = QWidget()
+        tabs_layout = QHBoxLayout(tabs_wrap)
+        tabs_layout.setContentsMargins(0, 0, 0, 0)
+        tabs_layout.setSpacing(8)
+
+        self.category_tabs = QTabBar()
+        self.category_tabs.setExpanding(False)
+        self.category_tabs.setMovable(False)
+        self.category_tabs.setElideMode(Qt.ElideRight)
+        self.category_tabs.currentChanged.connect(self._on_tab_changed)
+        self.category_tabs.setStyleSheet("""
+            QTabBar::tab {
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 8px;
+                padding: 8px 16px;
+                color: #334155;
+                margin-right: 6px;
+            }
+            QTabBar::tab:selected {
+                background: #0ea5e9;
+                border-color: #0284c7;
+                color: #ffffff;
+                font-weight: 600;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #eef2ff;
+            }
+        """)
+        tabs_layout.addWidget(self.category_tabs)
+
+        self.add_tab_btn = QPushButton("+")
+        self.add_tab_btn.setObjectName("Secondary")
+        self.add_tab_btn.setCursor(Qt.PointingHandCursor)
+        self.add_tab_btn.setFixedSize(36, 36)
+        self.add_tab_btn.clicked.connect(self._add_category_tab)
+        tabs_layout.addWidget(self.add_tab_btn)
+
+        self.delete_tab_btn = QPushButton("删除Tab")
+        self.delete_tab_btn.setObjectName("Secondary")
+        self.delete_tab_btn.setCursor(Qt.PointingHandCursor)
+        self.delete_tab_btn.clicked.connect(self._delete_category_tab)
+        tabs_layout.addWidget(self.delete_tab_btn)
+
+        tabs_layout.addStretch()
+
+        self._refresh_category_tabs(select_category=self.current_filter)
+        return tabs_wrap
     
     def _create_image_panel(self):
         """创建图片列表面板"""
@@ -258,11 +269,20 @@ class ImageManagementTab(QWidget):
                     data = json.load(f)
                     self.categories = data.get("categories", ["联系方式", "店铺地址"])
                     images_data = data.get("images", {})
+                    for category in images_data.keys():
+                        if category not in self.categories:
+                            self.categories.append(category)
                     # 转换为 filename -> category 映射
                     self.image_categories = {}
                     for category, filenames in images_data.items():
                         for filename in filenames:
                             self.image_categories[filename] = category
+            else:
+                self.categories = ["联系方式", "店铺地址"]
+                self.image_categories = {}
+            self.categories = [c.strip() for c in self.categories if c and c.strip()]
+            if not self.categories:
+                self.categories = ["联系方式", "店铺地址"]
         except Exception as e:
             self.log_message.emit(f"❌ 加载分类配置失败: {str(e)}")
     
@@ -285,20 +305,114 @@ class ImageManagementTab(QWidget):
             self.categories_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.categories_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            self.categories_updated.emit(self.categories)
             
         except Exception as e:
             self.log_message.emit(f"❌ 保存分类配置失败: {str(e)}")
     
-    def _on_filter_changed(self, filter_text):
-        """分类筛选变更"""
-        self.current_filter = filter_text
+    def _refresh_category_tabs(self, select_category: str = ""):
+        """刷新分类Tab"""
+        if not hasattr(self, "category_tabs"):
+            return
+        self.category_tabs.blockSignals(True)
+        while self.category_tabs.count() > 0:
+            self.category_tabs.removeTab(0)
+        self.category_tabs.addTab(self.ALL_TAB_NAME)
+        for category in self.categories:
+            self.category_tabs.addTab(category)
+        self.category_tabs.blockSignals(False)
+
+        valid_targets = [self.ALL_TAB_NAME] + self.categories
+        target = select_category if select_category in valid_targets else self.ALL_TAB_NAME
+        self.current_filter = target
+        if target:
+            index = -1
+            for i in range(self.category_tabs.count()):
+                if self.category_tabs.tabText(i) == target:
+                    index = i
+                    break
+            if index >= 0:
+                self.category_tabs.setCurrentIndex(index)
+
+    def _on_tab_changed(self, index):
+        """Tab切换"""
+        if index < 0:
+            return
+        self.current_filter = self.category_tabs.tabText(index)
         self._load_images()
+
+    def _add_category_tab(self):
+        """新增分类Tab"""
+        category_name, ok = QInputDialog.getText(self, "新增分类", "请输入分类名称：")
+        if not ok:
+            return
+        category_name = category_name.strip()
+        if not category_name:
+            QMessageBox.warning(self, "警告", "分类名称不能为空")
+            return
+        if category_name in self.categories:
+            QMessageBox.information(self, "提示", "该分类已存在")
+            return
+        if category_name == self.ALL_TAB_NAME:
+            QMessageBox.warning(self, "警告", "“全部”是系统保留Tab名称")
+            return
+        self.categories.append(category_name)
+        self._save_categories()
+        self._refresh_category_tabs(select_category=category_name)
+        self._load_images()
+        self.log_message.emit(f"✅ 新增分类: {category_name}")
+
+    def _delete_category_tab(self):
+        """删除分类Tab（仅删除分类，不删除图片）"""
+        if not self.categories:
+            QMessageBox.information(self, "提示", "当前没有可删除的分类Tab")
+            return
+
+        category_name, ok = QInputDialog.getItem(
+            self,
+            "删除Tab",
+            "请选择要删除的Tab：",
+            self.categories,
+            0,
+            True
+        )
+        if not ok:
+            return
+        category_name = category_name.strip()
+        if not category_name:
+            return
+        if category_name == self.ALL_TAB_NAME:
+            QMessageBox.warning(self, "警告", "“全部”Tab不能删除")
+            return
+        if category_name not in self.categories:
+            QMessageBox.warning(self, "警告", "未找到对应的分类Tab")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定删除分类 Tab [{category_name}] 吗？\n\n仅删除Tab，不会删除图片文件。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self.categories = [cat for cat in self.categories if cat != category_name]
+        for filename, category in list(self.image_categories.items()):
+            if category == category_name:
+                self.image_categories.pop(filename, None)
+        self._save_categories()
+        self._refresh_category_tabs(select_category=self.ALL_TAB_NAME)
+        self._load_images()
+        self.log_message.emit(f"✅ 已删除分类 Tab: {category_name}（图片保留在“全部”中可见）")
     
     def _load_images(self):
         """加载图片"""
         self.status_label.setText("正在加载图片...")
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+        self.visible_image_count = 0
         
         # 清空当前列表
         self.image_list.clear()
@@ -328,12 +442,9 @@ class ImageManagementTab(QWidget):
     
     def _should_show_image(self, filename):
         """根据当前筛选判断是否显示图片"""
-        if self.current_filter == "全部":
+        if not self.current_filter or self.current_filter == self.ALL_TAB_NAME:
             return True
-        elif self.current_filter == "未分类":
-            return filename not in self.image_categories
-        else:
-            return self.image_categories.get(filename) == self.current_filter
+        return self.image_categories.get(filename) == self.current_filter
     
     def _on_image_loaded(self, path: str, pixmap: QPixmap):
         """图片加载完成"""
@@ -356,6 +467,7 @@ class ImageManagementTab(QWidget):
         item.setData(Qt.UserRole, path)
         item.setToolTip(f"{filename}\n分类: {category if category else '未分类'}")
         self.image_list.addItem(item)
+        self.visible_image_count += 1
     
     def _on_progress_updated(self, current: int, total: int):
         """更新进度"""
@@ -366,50 +478,8 @@ class ImageManagementTab(QWidget):
     def _on_load_finished(self):
         """加载完成"""
         self.progress_bar.setVisible(False)
-        self.status_label.setText(f"共加载 {len(self.current_images)} 张图片")
-        self.log_message.emit(f"✅ 图片加载完成，共 {len(self.current_images)} 张")
-    
-    def _set_category(self):
-        """设置选中图片的分类"""
-        selected_items = self.image_list.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, "警告", "请先选择要设置分类的图片")
-            return
-        
-        dialog = CategorySelectDialog(self.categories, parent=self)
-        if dialog.exec() == QDialog.Accepted:
-            category = dialog.get_category()
-            if category == "移除分类":
-                category = None
-            
-            for item in selected_items:
-                image_path = item.data(Qt.UserRole)
-                filename = Path(image_path).name
-                
-                if category:
-                    self.image_categories[filename] = category
-                else:
-                    self.image_categories.pop(filename, None)
-            
-            self._save_categories()
-            self._load_images()
-            self.log_message.emit(f"✅ 已设置 {len(selected_items)} 张图片的分类")
-    
-    def _quick_set_category(self, category: str):
-        """快捷设置分类"""
-        selected_items = self.image_list.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, "警告", "请先选择要设置分类的图片")
-            return
-        
-        for item in selected_items:
-            image_path = item.data(Qt.UserRole)
-            filename = Path(image_path).name
-            self.image_categories[filename] = category
-        
-        self._save_categories()
-        self._load_images()
-        self.log_message.emit(f"✅ 已将 {len(selected_items)} 张图片设置为 [{category}]")
+        self.status_label.setText(f"当前Tab[{self.current_filter}] 显示 {self.visible_image_count} 张图片（库内共 {len(self.current_images)} 张）")
+        self.log_message.emit(f"✅ 图片加载完成，当前Tab[{self.current_filter}] {self.visible_image_count} 张")
     
     def _upload_images(self):
         """上传图片"""
@@ -437,12 +507,15 @@ class ImageManagementTab(QWidget):
                         counter += 1
                     
                     shutil.copy2(src_path, dst_path)
+                    if self.current_filter in self.categories:
+                        self.image_categories[dst_path.name] = self.current_filter
                     copied_count += 1
                     
                 except Exception as e:
                     self.log_message.emit(f"❌ 复制文件失败: {src_path.name} - {str(e)}")
             
             if copied_count > 0:
+                self._save_categories()
                 self.log_message.emit(f"✅ 成功上传 {copied_count} 张图片")
                 self._load_images()
             else:
@@ -476,12 +549,15 @@ class ImageManagementTab(QWidget):
             for item in selected_items:
                 image_path = item.data(Qt.UserRole)
                 try:
+                    filename = Path(image_path).name
                     os.remove(image_path)
+                    self.image_categories.pop(filename, None)
                     deleted_count += 1
                 except Exception as e:
                     self.log_message.emit(f"❌ 删除失败: {image_path} - {str(e)}")
             
             if deleted_count > 0:
+                self._save_categories()
                 self.log_message.emit(f"✅ 成功删除 {deleted_count} 张图片")
                 self._load_images()
             else:
@@ -522,48 +598,3 @@ class ImageManagementTab(QWidget):
             return f"{size_bytes / (1024 * 1024):.1f} MB"
         else:
             return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
-
-
-class CategorySelectDialog(QDialog):
-    """分类选择对话框"""
-    
-    def __init__(self, categories, parent=None):
-        super().__init__(parent)
-        self.categories = categories
-        
-        self.setWindowTitle("选择分类")
-        self.setFixedSize(300, 200)
-        self._setup_ui()
-    
-    def _setup_ui(self):
-        """设置UI"""
-        layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        
-        label = QLabel("请选择图片分类：")
-        label.setStyleSheet("font-weight: 600; color: #334155;")
-        layout.addWidget(label)
-        
-        self.category_combo = QComboBox()
-        self.category_combo.addItems(self.categories + ["移除分类"])
-        self.category_combo.setStyleSheet("""
-            QComboBox {
-                padding: 10px 12px;
-                border: 1px solid #e2e8f0;
-                border-radius: 6px;
-                font-size: 14px;
-            }
-        """)
-        layout.addWidget(self.category_combo)
-        
-        layout.addStretch()
-        
-        # 按钮
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
-    
-    def get_category(self):
-        """获取选中的分类"""
-        return self.category_combo.currentText()
