@@ -56,6 +56,10 @@ class ReplyCoordinator(QObject):
             "朝阳", "海淀", "丰台", "通州", "顺义", "门头沟", "大兴", "昌平", "石景山",
             "西城", "东城", "房山", "怀柔", "平谷", "密云", "延庆"
         )
+        self._jiangzhe_regions = (
+            "江浙沪", "江苏", "浙江", "苏州", "无锡", "常州", "南通", "南京",
+            "宁波", "杭州", "绍兴", "嘉兴", "湖州", "金华", "温州"
+        )
 
     def coordinate_reply(self, session_id: str, user_message: str,
                         callback: Callable = None,
@@ -131,6 +135,13 @@ class ReplyCoordinator(QObject):
         if target_store != "unknown":
             store = self.knowledge_service.get_store_display(target_store)
             store_name = store.get("store_name", "门店")
+            jiangzhe_region = self._extract_jiangzhe_region(user_message)
+            if target_store == "sh_renmin" and jiangzhe_region:
+                reply = f"姐姐，{jiangzhe_region}地区推荐您到上海人民广场店，您方便的话可以过来看看试戴～"
+                session.set_context("last_target_store", target_store)
+                session.set_context("last_address_query_at", user_message)
+                self._emit_direct_reply(session_id, reply, callback)
+                return True
             sent_stores = set(session.get_context("sent_address_stores", []) or [])
             if target_store in sent_stores:
                 district = self._extract_beijing_district(user_message)
@@ -143,10 +154,14 @@ class ReplyCoordinator(QObject):
                     else:
                         reply = "姐姐，北京目前只有朝阳这1家门店，您方便的话可以过来看看试戴～"
                 else:
-                    reply = (
-                        f"姐姐，这个区域就近还是{store_name}，之前已经给您发过位置图了，"
-                        "我也可以帮您安排预约时间～"
-                    )
+                    region_hint = self._extract_region_hint(user_message)
+                    if target_store == "sh_renmin" and region_hint:
+                        reply = f"姐姐，{region_hint}地区推荐您到上海人民广场店，您方便的话可以过来看看试戴～"
+                    else:
+                        reply = (
+                            f"姐姐，这个区域就近还是{store_name}，之前已经给您发过位置图了，"
+                            "我也可以帮您安排预约时间～"
+                        )
                 session.set_context("last_target_store", target_store)
                 session.set_context("last_address_query_at", user_message)
                 self._emit_direct_reply(session_id, reply, callback)
@@ -202,6 +217,22 @@ class ReplyCoordinator(QObject):
         for d in self._beijing_districts:
             if d in text:
                 return d
+        return ""
+
+    def _extract_jiangzhe_region(self, text: str) -> str:
+        text = (text or "").strip()
+        for r in self._jiangzhe_regions:
+            if r in text:
+                return r
+        return ""
+
+    def _extract_region_hint(self, text: str) -> str:
+        hint = self._extract_beijing_district(text)
+        if hint:
+            return f"{hint}区"
+        hint = self._extract_jiangzhe_region(text)
+        if hint:
+            return hint
         return ""
 
     def _call_llm(self, session_id: str, user_message: str,
