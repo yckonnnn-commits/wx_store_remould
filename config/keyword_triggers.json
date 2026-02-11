@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-02-10T17:30:20.383725",
+  "updated_at": "2026-02-11T11:41:49.537483",
   "triggers": [
     {
       "keywords": [
@@ -28,15 +28,6 @@
       ],
       "category": "店铺地址",
       "enabled": true
-    },
-    {
-      "keywords": [
-        "好的",
-        "谢谢"
-      ],
-      "category": "视频素材",
-      "enabled": false,
-      "id": "b524822a"
     }
   ]
 }
