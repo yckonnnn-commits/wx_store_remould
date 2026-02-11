@@ -19,6 +19,11 @@ class ChatSession:
         self.last_activity = datetime.now()
         self.reply_count = 0
         self.last_reply_time: Optional[datetime] = None
+        self.context: Dict = {
+            "address_prompt_count": 0,
+            "last_target_store": "",
+            "last_address_query_at": None
+        }
 
     def add_message(self, text: str, is_user: bool = True):
         """添加消息"""
@@ -49,6 +54,12 @@ class ChatSession:
         """记录回复"""
         self.reply_count += 1
         self.last_reply_time = datetime.now()
+
+    def get_context(self, key: str, default=None):
+        return self.context.get(key, default)
+
+    def set_context(self, key: str, value):
+        self.context[key] = value
 
     def should_reply(self, min_interval_seconds: int = 60) -> bool:
         """检查是否应该回复（防止过于频繁）"""

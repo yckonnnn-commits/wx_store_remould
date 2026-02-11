@@ -21,6 +21,60 @@ class KnowledgeService(QObject):
     data_exported = Signal(str)     # 数据导出 (file_path)
     search_completed = Signal(list) # 搜索完成 (results)
     ADDRESS_KEYWORDS = ("地址", "位置", "门店", "店铺", "在哪", "哪里", "怎么去")
+    STORE_DETAILS = {
+        "beijing_chaoyang": {
+            "city": "beijing",
+            "store_name": "北京朝阳门店",
+            "store_address": "朝阳区建外SOHO东区"
+        },
+        "sh_jingan": {
+            "city": "shanghai",
+            "store_name": "上海静安门店",
+            "store_address": "静安区愚园路172号环球世界大厦A座"
+        },
+        "sh_renmin": {
+            "city": "shanghai",
+            "store_name": "上海人民广场门店",
+            "store_address": "黄埔区汉口路650号亚洲大厦"
+        },
+        "sh_hongkou": {
+            "city": "shanghai",
+            "store_name": "上海虹口门店",
+            "store_address": "虹口区花园路16号嘉和国际大厦东楼"
+        },
+        "sh_wujiaochang": {
+            "city": "shanghai",
+            "store_name": "上海五角场门店",
+            "store_address": "政通路177号，万达广场E栋C座"
+        },
+        "sh_xuhui": {
+            "city": "shanghai",
+            "store_name": "上海徐汇门店",
+            "store_address": "徐汇区漕溪北路45号中航德必大厦"
+        }
+    }
+    SHANGHAI_DISTRICT_STORE_MAP = {
+        "闵行": "sh_xuhui",
+        "长宁": "sh_jingan",
+        "虹口": "sh_hongkou",
+        "杨浦": "sh_wujiaochang",
+        "五角场": "sh_wujiaochang",
+        "黄浦": "sh_renmin",
+        "黄埔": "sh_renmin",
+        "人民广场": "sh_renmin",
+        "人广": "sh_renmin",
+        "徐汇": "sh_xuhui",
+        "静安": "sh_jingan",
+        "浦东": "sh_renmin",
+        "青浦": "sh_renmin",
+        "金山": "sh_renmin",
+        "崇明": "sh_renmin",
+        "宝山": "sh_hongkou",
+        "普陀": "sh_jingan",
+        "松江": "sh_xuhui",
+        "嘉定": "sh_xuhui",
+        "奉贤": "sh_xuhui",
+    }
 
     def __init__(self, repository: KnowledgeRepository):
         super().__init__()
@@ -63,45 +117,61 @@ class KnowledgeService(QObject):
         """根据用户地理位置解析推荐门店（仅路由，不生成文案）"""
         text = (user_text or "").strip()
         if not text:
-            return {"city": "unknown", "target_store": "unknown", "reason": "unknown"}
+            return {"city": "unknown", "target_store": "unknown", "reason": "unknown", "store_address": None}
 
         neg_beijing = any(k in text for k in ("不在北京", "不是北京", "不去北京"))
         neg_shanghai = any(k in text for k in ("不在上海", "不是上海", "不去上海"))
+        # 北京：任何北京区县都只推荐朝阳
+        beijing_markers = (
+            "北京", "朝阳", "海淀", "丰台", "通州", "顺义", "门头沟", "大兴", "昌平",
+            "石景山", "西城", "东城", "房山", "怀柔", "平谷", "密云", "延庆"
+        )
+        if not neg_beijing and any(k in text for k in beijing_markers):
+            return self._build_route("beijing_chaoyang", "beijing_all_district")
 
-        # 北京与周边
-        if not neg_beijing and any(k in text for k in ("北京", "天津", "河北", "门头沟", "朝阳", "海淀", "丰台", "通州", "顺义")):
-            return {"city": "beijing", "target_store": "beijing_chaoyang", "reason": "jingjinji"}
+        # 京津冀 + 内蒙古 -> 北京
+        if any(k in text for k in ("天津", "河北", "内蒙古")):
+            return self._build_route("beijing_chaoyang", "north_fallback_beijing")
 
-        # 上海区级
-        if "闵行" in text:
-            return {"city": "shanghai", "target_store": "sh_xuhui", "reason": "minhang_map"}
-        if "长宁" in text:
-            return {"city": "shanghai", "target_store": "sh_jingan", "reason": "changning_map"}
-        if "虹口" in text:
-            return {"city": "shanghai", "target_store": "sh_hongkou", "reason": "same_district"}
-        if "杨浦" in text or "五角场" in text:
-            return {"city": "shanghai", "target_store": "sh_wujiaochang", "reason": "same_district"}
-        if "黄浦" in text or "人民广场" in text or "人广" in text:
-            return {"city": "shanghai", "target_store": "sh_renmin", "reason": "same_district"}
-        if "徐汇" in text:
-            return {"city": "shanghai", "target_store": "sh_xuhui", "reason": "same_district"}
-        if "静安" in text:
-            return {"city": "shanghai", "target_store": "sh_jingan", "reason": "same_district"}
+        # 上海明确区映射
+        for district, store_key in self.SHANGHAI_DISTRICT_STORE_MAP.items():
+            if district in text:
+                return self._build_route(store_key, f"sh_district_map:{district}")
 
-        # 上海其他区
-        if not neg_shanghai and any(k in text for k in ("上海", "浦东", "宝山", "普陀", "青浦", "松江", "嘉定", "奉贤", "金山", "崇明")):
-            return {"city": "shanghai", "target_store": "sh_renmin", "reason": "fallback_renmin"}
+        # 只说上海未带区：追问区，不直接给门店
+        if not neg_shanghai and "上海" in text:
+            return {"city": "shanghai", "target_store": "unknown", "reason": "shanghai_need_district", "store_address": None}
 
-        # 江浙沪周边默认推荐上海
+        # 江浙地区 -> 上海人民广场
         if any(k in text for k in (
             "江苏", "浙江", "苏州", "无锡", "常州", "南通", "南京", "宁波",
             "杭州", "绍兴", "嘉兴", "湖州", "金华", "温州"
         )):
-            return {"city": "shanghai", "target_store": "sh_renmin", "reason": "jiangzhehu"}
+            return self._build_route("sh_renmin", "jiangzhe_to_sh_renmin")
 
-        return {"city": "unknown", "target_store": "unknown", "reason": "unknown"}
+        # 其他非覆盖城市 -> unknown（走追问）
+        return {"city": "unknown", "target_store": "unknown", "reason": "unknown", "store_address": None}
 
-    def add_item(self, question: str, answer: str, category: str = "", tags: Optional[List[str]] = None) -> Optional[str]:
+    def _build_route(self, target_store: str, reason: str) -> dict:
+        detail = self.STORE_DETAILS.get(target_store, {})
+        return {
+            "city": detail.get("city", "unknown"),
+            "target_store": target_store,
+            "reason": reason,
+            "store_address": detail.get("store_address"),
+            "store_name": detail.get("store_name", "")
+        }
+
+    def get_store_display(self, target_store: str) -> dict:
+        detail = self.STORE_DETAILS.get(target_store, {})
+        return {
+            "target_store": target_store,
+            "store_name": detail.get("store_name", ""),
+            "store_address": detail.get("store_address")
+        }
+
+    def add_item(self, question: str, answer: str, intent: str = "", tags: Optional[List[str]] = None,
+                 category: Optional[str] = None) -> Optional[str]:
         """添加知识库条目
 
         Returns:
@@ -110,14 +180,15 @@ class KnowledgeService(QObject):
         if not question or not answer:
             return None
 
-        item = self.repository.add(question, answer, category=category, tags=tags)
+        item = self.repository.add(question, answer, intent=intent, tags=tags, category=category)
         self.item_added.emit(item.id)
         return item.id
 
     def update_item(self, item_id: str, question: str = None, answer: str = None,
-                    category: str = None, tags: Optional[List[str]] = None) -> bool:
+                    intent: str = None, tags: Optional[List[str]] = None,
+                    category: Optional[str] = None) -> bool:
         """更新知识库条目"""
-        success = self.repository.update(item_id, question, answer, category=category, tags=tags)
+        success = self.repository.update(item_id, question, answer, intent=intent, tags=tags, category=category)
         if success:
             self.item_updated.emit(item_id)
         return success

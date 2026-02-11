@@ -24,9 +24,7 @@ class KnowledgeEditDialog(QDialog):
         super().__init__(parent)
         self.item = item or KnowledgeItem()
         default_categories = [
-            "购买方式", "地址门店", "选购建议", "品牌介绍", "价格报价", "异议处理",
-            "预约到店", "佩戴体验", "产品介绍", "售后政策", "护理建议",
-            "引导私域", "促销规则", "需求探索", "转介绍会员", "使用寿命"
+            "general", "address", "price", "wearing"
         ]
         self._categories = categories or default_categories
         self._tags = tags or []
@@ -38,18 +36,18 @@ class KnowledgeEditDialog(QDialog):
         layout = QFormLayout(self)
         layout.setSpacing(16)
 
-        # 分类
+        # 意图
         self.category_input = QComboBox()
         self.category_input.addItems(self._categories)
         self.category_input.setEditable(True)
-        self.category_input.setCurrentText(self.item.category or "")
-        layout.addRow("分类:", self.category_input)
+        self.category_input.setCurrentText(self.item.intent or "")
+        layout.addRow("意图:", self.category_input)
 
         # 标签
         self.tags_input = QComboBox()
         self.tags_input.setEditable(True)
         self.tags_input.addItems(self._tags)
-        self.tags_input.lineEdit().setPlaceholderText("如：价格,异议处理,售前话术")
+        self.tags_input.lineEdit().setPlaceholderText("如：地址,门店,上海")
         self.tags_input.setCurrentText("、".join(self.item.tags) if self.item.tags else "")
         layout.addRow("标签:", self.tags_input)
 
@@ -91,7 +89,7 @@ class KnowledgeEditDialog(QDialog):
 
         self.item.question = question
         self.item.answer = answer
-        self.item.category = category
+        self.item.intent = category
         self.item.tags = tags
         self.accept()
 
@@ -199,7 +197,7 @@ class KnowledgeTab(QWidget):
         # Table
         self.table = QTableWidget()
         self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["分类", "标签", "问题", "答案", "操作"])
+        self.table.setHorizontalHeaderLabels(["意图", "标签", "问题", "答案", "操作"])
 
         # Setup header
         header = self.table.horizontalHeader()
@@ -256,11 +254,11 @@ class KnowledgeTab(QWidget):
         self.table.setRowCount(len(items))
 
         for i, item in enumerate(items):
-            # 分类
+            # 意图
             cat_widget = QWidget()
             cat_layout = QHBoxLayout(cat_widget)
             cat_layout.setContentsMargins(8, 0, 8, 0)
-            cat_label = QLabel(item.category or "未分类")
+            cat_label = QLabel(item.intent or "general")
             cat_label.setStyleSheet("""
                 background: #eff6ff; color: #2563eb; 
                 padding: 4px 8px; border-radius: 6px; 
@@ -349,7 +347,7 @@ class KnowledgeTab(QWidget):
         dialog = KnowledgeEditDialog(parent=self, categories=categories, tags=tags)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             item = dialog.get_item()
-            self.repository.add(item.question, item.answer, category=item.category, tags=item.tags)
+            self.repository.add(item.question, item.answer, intent=item.intent, tags=item.tags)
             self.data_changed.emit()
 
     def _on_edit(self, item_id: str):
@@ -364,13 +362,13 @@ class KnowledgeTab(QWidget):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             updated = dialog.get_item()
             self.repository.update(item_id, updated.question, updated.answer,
-                                   category=updated.category, tags=updated.tags)
+                                   intent=updated.intent, tags=updated.tags)
             self.data_changed.emit()
 
     def _collect_meta(self):
         """收集已有分类与标签，用于下拉建议"""
         items = self.repository.get_all()
-        categories = sorted({i.category for i in items if getattr(i, "category", "").strip()})
+        categories = sorted({i.intent for i in items if getattr(i, "intent", "").strip()})
         tags = sorted({t for i in items for t in (getattr(i, "tags", []) or []) if t.strip()})
         return categories, tags
 
@@ -387,7 +385,7 @@ class KnowledgeTab(QWidget):
     def _on_import(self):
         """导入知识库"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "导入知识库", "", "JSON Files (*.json);;All Files (*.*)"
+            self, "导入知识库", "", "Knowledge Files (*.json *.xlsx);;JSON Files (*.json);;Excel Files (*.xlsx);;All Files (*.*)"
         )
         if file_path:
             success, failed = self.repository.import_from_file(Path(file_path))

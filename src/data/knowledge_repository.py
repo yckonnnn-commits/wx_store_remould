@@ -6,6 +6,8 @@
 import json
 import re
 import uuid
+import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
@@ -16,24 +18,22 @@ class KnowledgeItem:
     """知识库条目"""
 
     def __init__(self, question: str = "", answer: str = "", item_id: str = None,
-                 category: str = "", tags: Optional[List[str]] = None):
+                 intent: str = "", tags: Optional[List[str]] = None):
         self.id = item_id or str(uuid.uuid4())
         self.question = question.strip() if question else ""
         self.answer = answer.strip() if answer else ""
-        self.category = category.strip() if category else ""
+        self.intent = intent.strip() if intent else ""
         self.tags = [t.strip() for t in (tags or []) if t.strip()]
         self.created_at = datetime.now().isoformat()
         self.updated_at = datetime.now().isoformat()
 
     def to_dict(self) -> dict:
+        # 阶段2：持久化仅保留4个业务字段
         return {
-            "id": self.id,
+            "intent": self.intent,
             "question": self.question,
             "answer": self.answer,
-            "category": self.category,
-            "tags": self.tags,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at
+            "tags": self.tags
         }
 
     @classmethod
@@ -42,7 +42,7 @@ class KnowledgeItem:
         item.id = data.get("id", str(uuid.uuid4()))
         item.question = data.get("question", "")
         item.answer = data.get("answer", "")
-        item.category = data.get("category", "")
+        item.intent = data.get("intent") or data.get("category", "")
         item.tags = data.get("tags", []) or []
         item.created_at = data.get("created_at", datetime.now().isoformat())
         item.updated_at = data.get("updated_at", datetime.now().isoformat())
@@ -104,9 +104,16 @@ class KnowledgeRepository(QObject):
                 return item
         return None
 
-    def add(self, question: str, answer: str, category: str = "", tags: Optional[List[str]] = None) -> KnowledgeItem:
+    def add(self, question: str, answer: str, intent: str = "", tags: Optional[List[str]] = None,
+            category: Optional[str] = None) -> KnowledgeItem:
         """添加新条目"""
-        item = KnowledgeItem(question=question, answer=answer, category=category, tags=tags)
+        resolved_intent = (intent or category or "").strip()
+        if not tags:
+            resolved_intent, auto_tags = self._infer_intent_and_tags(question, answer)
+            if not resolved_intent:
+                resolved_intent = intent or category or "general"
+            tags = auto_tags
+        item = KnowledgeItem(question=question, answer=answer, intent=resolved_intent, tags=tags)
         self._items.append(item)
         self._search_cache.clear()
         self.data_changed.emit()
@@ -114,7 +121,8 @@ class KnowledgeRepository(QObject):
         return item
 
     def update(self, item_id: str, question: str = None, answer: str = None,
-               category: str = None, tags: Optional[List[str]] = None) -> bool:
+               intent: str = None, tags: Optional[List[str]] = None,
+               category: Optional[str] = None) -> bool:
         """更新条目"""
         item = self.get_by_id(item_id)
         if not item:
@@ -124,8 +132,9 @@ class KnowledgeRepository(QObject):
             item.question = question.strip()
         if answer is not None:
             item.answer = answer.strip()
-        if category is not None:
-            item.category = category.strip()
+        resolved_intent = intent if intent is not None else category
+        if resolved_intent is not None:
+            item.intent = resolved_intent.strip()
         if tags is not None:
             item.tags = [t.strip() for t in tags if t.strip()]
         item.updated_at = datetime.now().isoformat()
@@ -238,6 +247,10 @@ class KnowledgeRepository(QObject):
         Returns:
             (成功数量, 失败数量)
         """
+        suffix = file_path.suffix.lower()
+        if suffix == ".xlsx":
+            return self._import_from_excel(file_path)
+
         success = 0
         failed = 0
 
@@ -251,10 +264,10 @@ class KnowledgeRepository(QObject):
                         if isinstance(item_data, dict):
                             question = item_data.get('question') or item_data.get('q')
                             answer = item_data.get('answer') or item_data.get('a')
-                            category = item_data.get('category', '')
+                            intent = item_data.get('intent') or item_data.get('category', '')
                             tags = item_data.get('tags', []) or []
                             if question and answer:
-                                self.add(question, answer, category=category, tags=tags)
+                                self.add(question, answer, intent=intent, tags=tags)
                                 success += 1
                             else:
                                 failed += 1
@@ -292,3 +305,125 @@ class KnowledgeRepository(QObject):
     def count(self) -> int:
         """获取条目数量"""
         return len(self._items)
+
+    def _infer_intent_and_tags(self, question: str, answer: str) -> Tuple[str, List[str]]:
+        text = f"{question or ''} {answer or ''}"
+
+        address_keywords = ("地址", "位置", "门店", "店铺", "在哪", "哪里", "怎么去", "上海", "北京")
+        price_keywords = ("价格", "多少钱", "价位", "贵", "最低价", "预算", "报价")
+        wearing_keywords = ("佩戴", "闷热", "夏天", "自然", "真实", "麻烦", "舒适", "头发", "掉发")
+
+        tags: List[str] = []
+        if any(k in text for k in address_keywords):
+            intent = "address"
+            tags.extend(["地址", "门店"])
+        elif any(k in text for k in price_keywords):
+            intent = "price"
+            tags.extend(["价格", "预算"])
+        elif any(k in text for k in wearing_keywords):
+            intent = "wearing"
+            tags.extend(["佩戴体验"])
+        else:
+            intent = "general"
+            tags.extend(["通用"])
+
+        if "上海" in text:
+            tags.append("上海")
+        if "北京" in text:
+            tags.append("北京")
+        if "预约" in text:
+            tags.append("预约")
+        if "售后" in text:
+            tags.append("售后")
+
+        # 去重保序
+        dedup_tags = []
+        for t in tags:
+            if t not in dedup_tags:
+                dedup_tags.append(t)
+        return intent, dedup_tags
+
+    def _import_from_excel(self, file_path: Path) -> Tuple[int, int]:
+        success = 0
+        failed = 0
+        try:
+            rows = self._read_xlsx_rows(file_path)
+            if not rows:
+                return (0, 0)
+
+            # 兼容表头：常见问题/参考答案
+            header = rows[0]
+            q_idx = self._find_col_index(header, ("常见问题", "问题", "question", "q"))
+            a_idx = self._find_col_index(header, ("参考答案", "答案", "answer", "a"))
+            if q_idx < 0 or a_idx < 0:
+                return (0, len(rows) - 1 if len(rows) > 1 else 0)
+
+            for row in rows[1:]:
+                try:
+                    question = row[q_idx].strip() if q_idx < len(row) else ""
+                    answer = row[a_idx].strip() if a_idx < len(row) else ""
+                    if not question or not answer:
+                        failed += 1
+                        continue
+                    intent, tags = self._infer_intent_and_tags(question, answer)
+                    self.add(question, answer, intent=intent, tags=tags)
+                    success += 1
+                except Exception:
+                    failed += 1
+            self.save()
+            return (success, failed)
+        except Exception as e:
+            print(f"[KnowledgeRepository] Excel导入失败: {e}")
+            return (0, 1)
+
+    def _find_col_index(self, header: List[str], candidates: Tuple[str, ...]) -> int:
+        normalized = [str(x).strip().lower() for x in header]
+        for c in candidates:
+            key = c.strip().lower()
+            if key in normalized:
+                return normalized.index(key)
+        return -1
+
+    def _read_xlsx_rows(self, file_path: Path) -> List[List[str]]:
+        ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        with zipfile.ZipFile(file_path) as zf:
+            shared_strings: List[str] = []
+            if "xl/sharedStrings.xml" in zf.namelist():
+                root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+                for si in root.findall("a:si", ns):
+                    texts = [t.text or "" for t in si.findall(".//a:t", ns)]
+                    shared_strings.append("".join(texts))
+
+            wb = ET.fromstring(zf.read("xl/workbook.xml"))
+            rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+            rel_map = {r.attrib["Id"]: r.attrib["Target"] for r in rels}
+            sheet_nodes = wb.findall("a:sheets/a:sheet", ns)
+            if not sheet_nodes:
+                return []
+            rid = sheet_nodes[0].attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+            target = rel_map.get(rid, "")
+            if not target:
+                return []
+            if not target.startswith("xl/"):
+                target = f"xl/{target}"
+
+            sheet_root = ET.fromstring(zf.read(target))
+            rows: List[List[str]] = []
+            for row in sheet_root.findall(".//a:row", ns):
+                row_values: List[str] = []
+                for cell in row.findall("a:c", ns):
+                    cell_type = cell.attrib.get("t")
+                    val_node = cell.find("a:v", ns)
+                    if val_node is None or val_node.text is None:
+                        row_values.append("")
+                        continue
+                    raw_val = val_node.text
+                    if cell_type == "s":
+                        try:
+                            row_values.append(shared_strings[int(raw_val)])
+                        except Exception:
+                            row_values.append("")
+                    else:
+                        row_values.append(raw_val)
+                rows.append(row_values)
+            return rows

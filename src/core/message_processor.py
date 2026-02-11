@@ -54,10 +54,12 @@ class MessageProcessor(QObject):
         self._image_cities = {}  # {filename: city}
         self._address_image_index = {}  # {store_key: [image_path, ...]}
         self._user_image_sent = {}  # {user_hash: {category: count}}
-        self._user_address_image_sent_count = {}  # {user_hash: count}
+        self._user_address_image_sent_count = {}  # 兼容保留（已改为会话级计数）
         self._user_video_state = {}  # {user_hash: {"armed": bool, "replied_count": int, "video_sent": bool}}
         self._user_sent_reply_texts = {}  # {user_hash: set(normalized_reply_text)}
         self._pending_post_reply_media = {}  # {session_id: {"type": "address_image", "path": str, "user_hash": str}}
+        self._media_enabled = False  # 阶段1：全局暂停图片/视频发送
+        self._address_image_enabled = True  # 阶段3：仅恢复地址图片
         self._load_keyword_config()
 
         # 定时器
@@ -160,6 +162,47 @@ class MessageProcessor(QObject):
             return None
         return self._get_user_hash(session.user_name)
 
+    def _get_session_address_image_sent_count(self, session_id: Optional[str]) -> int:
+        """当前会话已发送地址图次数（会话级）"""
+        if not session_id:
+            return 0
+        session = self.sessions.get_session(session_id)
+        if not session:
+            return 0
+        return int(session.get_context("address_image_sent_count", 0) or 0)
+
+    def _increment_session_address_image_sent_count(self, session_id: Optional[str]) -> int:
+        """会话级地址图计数 +1"""
+        if not session_id:
+            return 0
+        session = self.sessions.get_session(session_id)
+        if not session:
+            return 0
+        next_count = self._get_session_address_image_sent_count(session_id) + 1
+        session.set_context("address_image_sent_count", next_count)
+        return next_count
+
+    def _get_session_sent_address_stores(self, session_id: Optional[str]) -> set:
+        """当前会话已发送过图片的门店集合"""
+        if not session_id:
+            return set()
+        session = self.sessions.get_session(session_id)
+        if not session:
+            return set()
+        stores = session.get_context("sent_address_stores", []) or []
+        return set(stores)
+
+    def _mark_session_address_store_sent(self, session_id: Optional[str], target_store: str):
+        """记录当前会话某门店地址图已发送"""
+        if not session_id or not target_store:
+            return
+        session = self.sessions.get_session(session_id)
+        if not session:
+            return
+        stores = self._get_session_sent_address_stores(session_id)
+        stores.add(target_store)
+        session.set_context("sent_address_stores", list(stores))
+
     def _ensure_user_video_state(self, user_hash: str) -> dict:
         """确保用户视频状态存在"""
         if user_hash not in self._user_video_state:
@@ -177,6 +220,17 @@ class MessageProcessor(QObject):
             f"user={user_hash}, armed={state.get('armed', False)}, "
             f"replied_count={state.get('replied_count', 0)}, video_sent={state.get('video_sent', False)}"
         )
+
+    def _is_media_enabled(self) -> bool:
+        """是否允许发送图片/视频"""
+        return self._media_enabled
+
+    def _can_send_media(self, media_meta: Optional[dict]) -> bool:
+        """媒体发送白名单：仅允许地址图片，其他继续暂停"""
+        media_type = (media_meta or {}).get("type", "")
+        if media_type == "address_image":
+            return self._address_image_enabled
+        return self._is_media_enabled()
 
     def reload_keyword_config(self):
         """公开方法：重新加载关键词与图片分类配置"""
@@ -393,27 +447,34 @@ class MessageProcessor(QObject):
         )
 
         # 检查关键词触发
-        triggered_category, image_path, extra = self._check_keyword_trigger(user_name, user_message)
+        triggered_category, image_path, extra = self._check_keyword_trigger(user_name, user_message, session_id=session_id)
         if triggered_category and image_path:
             if triggered_category == "店铺地址" and extra.get("address_pending"):
-                self._pending_post_reply_media[session_id] = {
-                    "type": "address_image",
-                    "path": image_path,
-                    "user_hash": extra.get("user_hash", "")
-                }
-                self.log_message.emit(f"🗺️ 已识别门店[{extra.get('target_store')}]，本轮文字回复后发送地址图片")
-            else:
-                self.log_message.emit(f"🖼️ 触发关键词 [{triggered_category}]，发送图片")
-                self._send_image(
-                    image_path,
-                    media_meta={
-                        "type": "category_image",
-                        "category": triggered_category,
-                        "user_hash": extra.get("user_hash", "")
+                if self._address_image_enabled:
+                    self._pending_post_reply_media[session_id] = {
+                        "type": "address_image",
+                        "path": image_path,
+                        "user_hash": extra.get("user_hash", ""),
+                        "session_id": session_id,
+                        "target_store": extra.get("target_store", "")
                     }
-                )
-                return
-        elif self._has_recent_address_context(session_id):
+                    self.log_message.emit(f"🗺️ 已识别门店[{extra.get('target_store')}]，本轮文字回复后发送地址图片")
+                else:
+                    self.log_message.emit(f"⏸️ 命中门店[{extra.get('target_store')}]，但媒体发送已暂停，仅发送文字推荐")
+            else:
+                self.log_message.emit(f"🖼️ 触发关键词 [{triggered_category}]")
+                if self._is_media_enabled():
+                    self._send_image(
+                        image_path,
+                        media_meta={
+                            "type": "category_image",
+                            "category": triggered_category,
+                            "user_hash": extra.get("user_hash", "")
+                        }
+                    )
+                    return
+                self.log_message.emit("⏸️ 媒体发送已暂停，继续走文字回复流程")
+        elif self._address_image_enabled and self._has_recent_address_context(session_id):
             self._try_queue_address_image(session_id, user_name, user_message)
 
         # 记录用户消息
@@ -479,17 +540,19 @@ class MessageProcessor(QObject):
                 self.reply_sent.emit(session_id, reply_text)
                 video_user_hash = self._mark_reply_progress_for_video(session_id)
                 pending_media = self._pending_post_reply_media.pop(session_id, None)
-                if pending_media and pending_media.get("type") == "address_image" and pending_media.get("path"):
+                if self._can_send_media(pending_media) and pending_media and pending_media.get("type") == "address_image" and pending_media.get("path"):
                     self.log_message.emit("🖼️ 本轮地址回复完成，发送对应门店图片")
                     self._send_image(
                         pending_media["path"],
                         media_meta={
                             "type": "address_image",
-                            "user_hash": pending_media.get("user_hash", "")
+                            "user_hash": pending_media.get("user_hash", ""),
+                            "session_id": pending_media.get("session_id", session_id),
+                            "target_store": pending_media.get("target_store", "")
                         }
                     )
                     return
-                if video_user_hash and self._maybe_send_delayed_video(session_id, video_user_hash):
+                if video_user_hash and self._is_media_enabled() and self._maybe_send_delayed_video(session_id, video_user_hash):
                     return
             else:
                 self.log_message.emit(f"❌ 发送失败")
@@ -501,15 +564,26 @@ class MessageProcessor(QObject):
 
     def _send_image(self, image_path: str, media_meta: Optional[dict] = None):
         """发送图片"""
+        if not self._can_send_media(media_meta):
+            media_type = (media_meta or {}).get("type", "unknown")
+            self.log_message.emit(f"⏸️ 媒体发送已暂停，跳过发送: type={media_type}, path={image_path}")
+            QTimer.singleShot(200, self._reset_poll_state)
+            return
+
         def on_sent(success, result):
             if success:
                 if media_meta and media_meta.get("type") == "address_image":
                     user_hash = media_meta.get("user_hash", "")
+                    session_id = media_meta.get("session_id", "")
+                    target_store = media_meta.get("target_store", "")
                     if user_hash:
                         self._user_address_image_sent_count[user_hash] = self._user_address_image_sent_count.get(user_hash, 0) + 1
+                    self._mark_session_address_store_sent(session_id, target_store)
+                    session_count = self._increment_session_address_image_sent_count(session_id)
+                    if session_id:
                         self.log_message.emit(
-                            f"🧭 地址图发送成功，触发延迟视频激活: user={user_hash}, "
-                            f"address_sent_count={self._user_address_image_sent_count[user_hash]}"
+                            f"🧭 地址图发送成功，会话已发送 {session_count}/6，门店去重记录已更新: "
+                            f"session={session_id}, store={target_store}, user={user_hash}"
                         )
                         self._arm_delayed_video(user_hash)
                 if media_meta and media_meta.get("type") == "category_image":
@@ -584,7 +658,7 @@ class MessageProcessor(QObject):
             return None
         return str(random.choice(candidates).resolve())
     
-    def _check_keyword_trigger(self, user_name: str, user_message: str) -> tuple[Optional[str], Optional[str], dict]:
+    def _check_keyword_trigger(self, user_name: str, user_message: str, session_id: Optional[str] = None) -> tuple[Optional[str], Optional[str], dict]:
         """
         检查是否触发关键词，并检查用户限制
         Returns: (category, image_path, extra)
@@ -619,9 +693,13 @@ class MessageProcessor(QObject):
                     self.log_message.emit("ℹ️ 地址意图已触发，但尚未识别到城市/区域，先走文字引导")
                     return None, None, {"address_route": route, "address_pending": False}
 
-                sent_count = self._user_address_image_sent_count.get(user_hash, 0)
-                if sent_count >= 1:
-                    self.log_message.emit("⏸️ 当前用户地址图片已达上限（1次），仅发送文字回复")
+                sent_count = self._get_session_address_image_sent_count(session_id)
+                if sent_count >= 6:
+                    self.log_message.emit("⏸️ 当前会话地址图片已达上限（6次），仅发送文字回复")
+                    return None, None, {"address_route": route, "address_pending": False}
+                sent_stores = self._get_session_sent_address_stores(session_id)
+                if target_store in sent_stores:
+                    self.log_message.emit(f"⏸️ 当前会话门店[{target_store}]地址图已发送过，不重复发送")
                     return None, None, {"address_route": route, "address_pending": False}
 
                 image_path = self._pick_address_image_for_store(target_store)
@@ -634,6 +712,7 @@ class MessageProcessor(QObject):
                     "address_pending": True,
                     "user_hash": user_hash,
                     "target_store": target_store,
+                    "session_id": session_id,
                 }
             
             # 检查用户是否已达到该分类的限制
@@ -687,15 +766,23 @@ class MessageProcessor(QObject):
 
     def _try_queue_address_image(self, session_id: str, user_name: str, user_message: str) -> bool:
         """尝试根据用户地区在本轮回复后补发地址图片"""
+        if not self._address_image_enabled:
+            self.log_message.emit("⏸️ 媒体发送已暂停，地址图片不入队")
+            return False
+
         route = self.knowledge.resolve_store_recommendation(user_message)
         target_store = route.get("target_store", "unknown")
         if target_store == "unknown":
             return False
 
         user_hash = self._get_user_hash(user_name)
-        sent_count = self._user_address_image_sent_count.get(user_hash, 0)
-        if sent_count >= 1:
-            self.log_message.emit("⏸️ 当前用户地址图片已达上限（1次），仅发送文字回复")
+        sent_count = self._get_session_address_image_sent_count(session_id)
+        if sent_count >= 6:
+            self.log_message.emit("⏸️ 当前会话地址图片已达上限（6次），仅发送文字回复")
+            return False
+        sent_stores = self._get_session_sent_address_stores(session_id)
+        if target_store in sent_stores:
+            self.log_message.emit(f"⏸️ 当前会话门店[{target_store}]地址图已发送过，不重复发送")
             return False
 
         image_path = self._pick_address_image_for_store(target_store)
@@ -706,7 +793,9 @@ class MessageProcessor(QObject):
         self._pending_post_reply_media[session_id] = {
             "type": "address_image",
             "path": image_path,
-            "user_hash": user_hash
+            "user_hash": user_hash,
+            "session_id": session_id,
+            "target_store": target_store
         }
         self.log_message.emit(f"🗺️ 已识别门店[{target_store}]，本轮文字回复后发送地址图片")
         return True
@@ -803,6 +892,12 @@ class MessageProcessor(QObject):
 
     def _maybe_send_delayed_video(self, session_id: str, user_hash: str) -> bool:
         """达到阈值后发送延迟视频"""
+        if not self._is_media_enabled():
+            self.log_message.emit(
+                f"⏸️ 媒体发送已暂停，跳过延迟视频链路: session={session_id}, user={user_hash}"
+            )
+            return False
+
         if not user_hash:
             return False
 
@@ -931,29 +1026,36 @@ class MessageProcessor(QObject):
                         session_id = f"user_{hash(user_name)}"
                         self.sessions.get_or_create_session(session_id=session_id, user_name=user_name)
                         # 检查关键词触发
-                        triggered_category, image_path, extra = self._check_keyword_trigger(user_name, latest_user_msg)
+                        triggered_category, image_path, extra = self._check_keyword_trigger(user_name, latest_user_msg, session_id=session_id)
                         if triggered_category and image_path:
                             if triggered_category == "店铺地址" and extra.get("address_pending"):
-                                self._pending_post_reply_media[session_id] = {
-                                    "type": "address_image",
-                                    "path": image_path,
-                                    "user_hash": extra.get("user_hash", "")
-                                }
-                                self.log_message.emit(f"🗺️ 已识别门店[{extra.get('target_store')}]，本轮文字回复后发送地址图片")
-                            else:
-                                self.log_message.emit(f"🖼️ 触发关键词 [{triggered_category}]，发送图片")
-                                self._send_image(
-                                    image_path,
-                                    media_meta={
-                                        "type": "category_image",
-                                        "category": triggered_category,
-                                        "user_hash": extra.get("user_hash", "")
+                                if self._address_image_enabled:
+                                    self._pending_post_reply_media[session_id] = {
+                                        "type": "address_image",
+                                        "path": image_path,
+                                        "user_hash": extra.get("user_hash", ""),
+                                        "session_id": session_id,
+                                        "target_store": extra.get("target_store", "")
                                     }
-                                )
-                                return
+                                    self.log_message.emit(f"🗺️ 已识别门店[{extra.get('target_store')}]，本轮文字回复后发送地址图片")
+                                else:
+                                    self.log_message.emit(f"⏸️ 命中门店[{extra.get('target_store')}]，但媒体发送已暂停，仅发送文字推荐")
+                            else:
+                                self.log_message.emit(f"🖼️ 触发关键词 [{triggered_category}]")
+                                if self._is_media_enabled():
+                                    self._send_image(
+                                        image_path,
+                                        media_meta={
+                                            "type": "category_image",
+                                            "category": triggered_category,
+                                            "user_hash": extra.get("user_hash", "")
+                                        }
+                                    )
+                                    return
+                                self.log_message.emit("⏸️ 媒体发送已暂停，继续走文字回复流程")
                         else:
                             session_id = f"user_{hash(user_name)}"
-                            if self._has_recent_address_context(session_id):
+                            if self._address_image_enabled and self._has_recent_address_context(session_id):
                                 self._try_queue_address_image(session_id, user_name, latest_user_msg)
                         
                         self.log_message.emit(f"🤖 准备调用大模型生成回复...")

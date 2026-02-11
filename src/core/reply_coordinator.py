@@ -35,6 +35,27 @@ class ReplyCoordinator(QObject):
 
         # 待处理的请求
         self._pending_requests: dict = {}
+        self._address_first_prompt = (
+            "姐姐，您在什么城市/区域？方便告诉我吗？我可以帮您针对性推荐相对应的门店，"
+            "我们的门店分布：北京1家店在朝阳区，上海有5家店（静安，人广，虹口，五角场，徐汇）"
+        )
+        self._address_followups = [
+            "姐姐方便说下您所在城市或区域吗？我好给您推荐最近门店。",
+            "姐姐您大概在什么城市或哪个区呀？我按距离给您就近安排。",
+            "姐姐告诉我您所在城市/区域，我马上给您匹配最近门店地址。"
+        ]
+        self._address_reply_markers = (
+            "推荐您去", "门店", "画红框", "图中画线", "人民广场门店", "徐汇门店",
+            "静安门店", "虹口门店", "五角场门店", "北京朝阳门店"
+        )
+        self._location_hint_keywords = (
+            "区", "市", "北京", "上海", "天津", "河北", "内蒙古", "江苏", "浙江",
+            "苏州", "无锡", "常州", "南通", "南京", "宁波", "杭州", "绍兴", "嘉兴", "湖州"
+        )
+        self._beijing_districts = (
+            "朝阳", "海淀", "丰台", "通州", "顺义", "门头沟", "大兴", "昌平", "石景山",
+            "西城", "东城", "房山", "怀柔", "平谷", "密云", "延庆"
+        )
 
     def coordinate_reply(self, session_id: str, user_message: str,
                         callback: Callable = None,
@@ -60,7 +81,27 @@ class ReplyCoordinator(QObject):
         if not session:
             session = self.session_manager.get_or_create_session(session_id)
 
-        # 检查是否应该回复（频率控制）
+        is_address_query = self.knowledge_service.is_address_query(user_message)
+        route = self.knowledge_service.resolve_store_recommendation(user_message)
+        has_address_context = self._has_recent_address_context(session)
+        has_location_hint = self._has_location_hint(user_message)
+
+        # 地址场景优先：地址询问，或在地址上下文中提供了地区信息（含“只说上海未说区”）
+        if (
+            is_address_query
+            or route.get("reason") == "shanghai_need_district"
+            or (route.get("target_store") != "unknown" and (has_address_context or has_location_hint))
+        ):
+            return self._coordinate_address_reply(
+                session_id=session_id,
+                session=session,
+                user_message=user_message,
+                route=route,
+                is_address_query=is_address_query,
+                callback=callback
+            )
+
+        # 非地址场景再做频率控制，避免漏掉“门头沟有吗”这类地址追问
         if not session.should_reply(min_interval_seconds=8):
             return False
 
@@ -78,29 +119,90 @@ class ReplyCoordinator(QObject):
                 self.reply_prepared.emit(session_id, kb_answer)
                 return True
 
-            route = self.knowledge_service.resolve_store_recommendation(user_message)
-            target_store = route.get("target_store", "unknown")
-            if target_store != "unknown" and (
-                self.knowledge_service.is_address_query(user_message) or self._has_recent_address_context(session)
-            ):
-                llm_user_message = (
-                    f"客户消息：{user_message}\n"
-                    f"地址路由结果：city={route.get('city')}, target_store={target_store}, reason={route.get('reason')}\n"
-                    "请根据 target_store 做就近门店推荐回复，语气自然亲切，1条完整回复。"
-                    "注意：只能在已知门店范围内表达，不可新增或改写门店。"
-                )
-                return self._call_llm(session_id, llm_user_message, callback, conversation_history)
-
-            if self.knowledge_service.is_address_query(user_message):
-                follow_up = "姐姐您大概在什么区/城市呢？我帮您就近安排最近的门店，买不买都没关系。"
-                self._handle_reply(session_id, follow_up, source="knowledge")
-                if callback:
-                    callback(True, follow_up)
-                self.reply_prepared.emit(session_id, follow_up)
-                return True
-
         # 知识库未匹配，调用LLM
         return self._call_llm(session_id, user_message, callback, conversation_history)
+
+    def _coordinate_address_reply(self, session_id: str, session: ChatSession, user_message: str,
+                                  route: dict, is_address_query: bool, callback: Callable = None) -> bool:
+        target_store = route.get("target_store", "unknown")
+        reason = route.get("reason", "unknown")
+
+        # 有明确门店：仅给门店名，不透传具体地址（平台限制）
+        if target_store != "unknown":
+            store = self.knowledge_service.get_store_display(target_store)
+            store_name = store.get("store_name", "门店")
+            sent_stores = set(session.get_context("sent_address_stores", []) or [])
+            if target_store in sent_stores:
+                district = self._extract_beijing_district(user_message)
+                if target_store == "beijing_chaoyang":
+                    if district:
+                        reply = (
+                            f"姐姐，{district}区目前没有我们的门店，北京目前只有朝阳这1家，"
+                            "您方便的话可以过来看看试戴～"
+                        )
+                    else:
+                        reply = "姐姐，北京目前只有朝阳这1家门店，您方便的话可以过来看看试戴～"
+                else:
+                    reply = (
+                        f"姐姐，这个区域就近还是{store_name}，之前已经给您发过位置图了，"
+                        "我也可以帮您安排预约时间～"
+                    )
+                session.set_context("last_target_store", target_store)
+                session.set_context("last_address_query_at", user_message)
+                self._emit_direct_reply(session_id, reply, callback)
+                return True
+            reply = (
+                f"姐姐，推荐您去{store_name}，可以看下图片画红框框的地方，"
+                "不懂得您可以继续问我～"
+            )
+            session.set_context("last_target_store", target_store)
+            session.set_context("last_address_query_at", user_message)
+            self._emit_direct_reply(session_id, reply, callback)
+            return True
+
+        # 只说“上海”没说区：优先追问区
+        if reason == "shanghai_need_district":
+            prompt_count = int(session.get_context("address_prompt_count", 0) or 0)
+            if prompt_count <= 0:
+                reply = "姐姐您在上海哪个区呀？我帮您匹配最近门店。"
+            else:
+                reply = "姐姐方便告诉我上海哪个区吗？我马上给您推荐最近门店。"
+            session.set_context("address_prompt_count", prompt_count + 1)
+            session.set_context("last_address_query_at", user_message)
+            self._emit_direct_reply(session_id, reply, callback)
+            return True
+
+        # 没有地区信息：首次长模板，后续变体追问（不重复）
+        if is_address_query:
+            prompt_count = int(session.get_context("address_prompt_count", 0) or 0)
+            if prompt_count <= 0:
+                reply = self._address_first_prompt
+            else:
+                idx = (prompt_count - 1) % len(self._address_followups)
+                reply = self._address_followups[idx]
+            session.set_context("address_prompt_count", prompt_count + 1)
+            session.set_context("last_address_query_at", user_message)
+            self._emit_direct_reply(session_id, reply, callback)
+            return True
+
+        return False
+
+    def _emit_direct_reply(self, session_id: str, reply_text: str, callback: Callable = None):
+        self._handle_reply(session_id, reply_text, source="knowledge")
+        if callback:
+            callback(True, reply_text)
+        self.reply_prepared.emit(session_id, reply_text)
+
+    def _has_location_hint(self, text: str) -> bool:
+        text = (text or "").strip()
+        return bool(text) and any(k in text for k in self._location_hint_keywords)
+
+    def _extract_beijing_district(self, text: str) -> str:
+        text = (text or "").strip()
+        for d in self._beijing_districts:
+            if d in text:
+                return d
+        return ""
 
     def _call_llm(self, session_id: str, user_message: str,
                   callback: Callable = None,
@@ -122,7 +224,8 @@ class ReplyCoordinator(QObject):
         # 记录待处理请求
         self._pending_requests[request_id] = {
             "session_id": session_id,
-            "callback": callback
+            "callback": callback,
+            "user_message": user_message
         }
 
         return True
@@ -135,9 +238,11 @@ class ReplyCoordinator(QObject):
         req_info = self._pending_requests.pop(request_id)
         session_id = req_info["session_id"]
         callback = req_info["callback"]
+        user_message = req_info.get("user_message", "")
 
         # 处理回复文本
         processed_reply = self._process_reply_text(reply_text)
+        processed_reply = self._sanitize_non_address_reply(user_message, processed_reply)
 
         # 记录回复
         self._handle_reply(session_id, processed_reply, source="llm")
@@ -147,6 +252,22 @@ class ReplyCoordinator(QObject):
             callback(True, processed_reply)
 
         self.reply_prepared.emit(session_id, processed_reply)
+
+    def _sanitize_non_address_reply(self, user_message: str, reply_text: str) -> str:
+        """非地址问题时，拦截误触发的地址推荐文案"""
+        if not reply_text:
+            return reply_text
+
+        is_address_query = self.knowledge_service.is_address_query(user_message)
+        route = self.knowledge_service.resolve_store_recommendation(user_message)
+        has_location_signal = route.get("target_store", "unknown") != "unknown"
+        if is_address_query or has_location_signal:
+            return reply_text
+
+        if any(marker in reply_text for marker in self._address_reply_markers):
+            return "姐姐，需要预约的，我帮您安排时间，您想今天还是明天到店呢？"
+
+        return reply_text
 
     def _on_llm_error(self, request_id: str, error: str):
         """LLM调用错误"""
