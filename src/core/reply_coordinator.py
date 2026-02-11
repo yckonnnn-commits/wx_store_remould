@@ -3,6 +3,8 @@
 协调知识库匹配和AI回复生成
 """
 
+import random
+import re
 from typing import Optional, Callable, List, Dict
 from PySide6.QtCore import QObject, Signal
 
@@ -47,6 +49,10 @@ class ReplyCoordinator(QObject):
         self._address_reply_markers = (
             "推荐您去", "门店", "画红框", "图中画线", "人民广场门店", "徐汇门店",
             "静安门店", "虹口门店", "五角场门店", "北京朝阳门店"
+        )
+        self._emoji_pool = (
+            "😊", "🌸", "✨", "👍", "🤝", "💗", "😄", "🙂", "😉", "🥰",
+            "🙌", "💪", "🌟", "🍀", "🫶", "😌", "🤗", "💫", "🌷", "🎉"
         )
         self._location_hint_keywords = (
             "区", "市", "北京", "上海", "天津", "河北", "内蒙古", "江苏", "浙江",
@@ -94,6 +100,7 @@ class ReplyCoordinator(QObject):
         if (
             is_address_query
             or route.get("reason") == "shanghai_need_district"
+            or route.get("reason") == "out_of_coverage"
             or (route.get("target_store") != "unknown" and (has_address_context or has_location_hint))
         ):
             return self._coordinate_address_reply(
@@ -187,6 +194,25 @@ class ReplyCoordinator(QObject):
             self._emit_direct_reply(session_id, reply, callback)
             return True
 
+        # 明确非覆盖地区（如新疆/大连）固定话术
+        if reason == "out_of_coverage":
+            region = route.get("detected_region", "")
+            if region:
+                reply = (
+                    "姐姐，我们目前的门店分布为：北京1家店在朝阳区，上海有5家店"
+                    "（静安，人广，虹口，五角场，徐汇），"
+                    f"您所在的{region}目前没有我们的门店，如果可以的话，可以来我们的门店预约试戴。"
+                )
+            else:
+                reply = (
+                    "姐姐，我们目前的门店分布为：北京1家店在朝阳区，上海有5家店"
+                    "（静安，人广，虹口，五角场，徐汇），"
+                    "您所在的地区目前没有我们的门店，如果可以的话，可以来我们的门店预约试戴。"
+                )
+            session.set_context("last_address_query_at", user_message)
+            self._emit_direct_reply(session_id, reply, callback)
+            return True
+
         # 没有地区信息：首次长模板，后续变体追问（不重复）
         if is_address_query:
             prompt_count = int(session.get_context("address_prompt_count", 0) or 0)
@@ -274,6 +300,7 @@ class ReplyCoordinator(QObject):
         # 处理回复文本
         processed_reply = self._process_reply_text(reply_text)
         processed_reply = self._sanitize_non_address_reply(user_message, processed_reply)
+        processed_reply = self._enforce_llm_reply_policy(session_id, user_message, processed_reply)
 
         # 记录回复
         self._handle_reply(session_id, processed_reply, source="llm")
@@ -337,6 +364,79 @@ class ReplyCoordinator(QObject):
             text = text[:max_length] + "..."
 
         return text.strip()
+
+    def _enforce_llm_reply_policy(self, session_id: str, user_message: str, reply_text: str) -> str:
+        """LLM输出轻约束：保留语义，仅做去噪与emoji补充"""
+        text = self._strip_reply_noise(reply_text)
+        if not text:
+            text = "姐姐我在呢，您继续说说需求😊"
+
+        text = self._ensure_single_line(text)
+        text = self._collapse_repeated_phrases(text)
+        # 仅做极长保护，避免异常输出刷屏
+        if len(text) > 120:
+            text = text[:120].strip()
+        text = self._ensure_emoji(text, session_id=session_id)
+        return text
+
+    def _strip_reply_noise(self, text: str) -> str:
+        text = (text or "").strip()
+        if not text:
+            return ""
+        # 去掉常见尾部噪音，如“15:13胃不疼”
+        text = re.sub(r"\s*\d{1,2}:\d{2}\S*$", "", text).strip()
+        return text
+
+    def _ensure_single_line(self, text: str) -> str:
+        return " ".join((text or "").split()).strip()
+
+    def _collapse_repeated_phrases(self, text: str) -> str:
+        text = re.sub(r"(姐姐，?){2,}", "姐姐，", text)
+        text = re.sub(r"(我帮您安排(?:时间)?，?){2,}", "我帮您安排，", text)
+        text = re.sub(r"(您方便(?:的话)?，?){2,}", "您方便，", text)
+        return text.strip("，,。") + ("。" if text and text[-1] not in "。！？" else "")
+
+    def _contains_emoji(self, text: str) -> bool:
+        if not text:
+            return False
+        emoji_pattern = re.compile(
+            "[\U0001F300-\U0001FAFF\U00002600-\U000026FF\U00002700-\U000027BF]"
+        )
+        return bool(emoji_pattern.search(text))
+
+    def _pick_session_emoji(self, session_id: str) -> str:
+        if not self._emoji_pool:
+            return "😊"
+        session = self.session_manager.get_session(session_id)
+        if not session:
+            return random.choice(self._emoji_pool)
+        last_idx = int(session.get_context("last_emoji_idx", -1) or -1)
+        candidates = list(range(len(self._emoji_pool)))
+        if len(candidates) > 1 and last_idx in candidates:
+            candidates.remove(last_idx)
+        idx = random.choice(candidates)
+        session.set_context("last_emoji_idx", idx)
+        return self._emoji_pool[idx]
+
+    def _ensure_emoji(self, text: str, session_id: str = "") -> str:
+        text = (text or "").strip()
+        if not text:
+            text = "姐姐我在呢"
+
+        emoji = self._pick_session_emoji(session_id or "")
+        # 统一结尾：去掉尾部多余标点/emoji，避免出现“。😊。”
+        ended_question = text.endswith(("?", "？"))
+        ended_exclaim = text.endswith(("!", "！"))
+        base = re.sub(
+            r"[\s。.!?！？…\U0001F300-\U0001FAFF\U00002600-\U000026FF\U00002700-\U000027BF]+$",
+            "",
+            text
+        ).strip()
+        if not base:
+            base = "姐姐我在呢"
+
+        end_punc = "？" if ended_question else ("！" if ended_exclaim else "。")
+        return f"{base}{end_punc}{emoji}"
 
     def get_quick_reply(self, keyword: str) -> Optional[str]:
         """获取快速回复"""

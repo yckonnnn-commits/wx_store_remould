@@ -3,6 +3,7 @@
 提供知识库相关的业务逻辑封装
 """
 
+import re
 from pathlib import Path
 from typing import Optional, List, Tuple
 from PySide6.QtCore import QObject, Signal
@@ -75,6 +76,14 @@ class KnowledgeService(QObject):
         "嘉定": "sh_xuhui",
         "奉贤": "sh_xuhui",
     }
+    NON_COVERAGE_REGION_HINTS = (
+        "新疆", "西藏", "青海", "宁夏", "甘肃", "云南", "贵州", "广西", "海南",
+        "黑龙江", "吉林", "辽宁", "山东", "山西", "陕西", "河南", "湖北", "湖南",
+        "江西", "福建", "广东", "四川", "重庆", "安徽",
+        "大连", "沈阳", "哈尔滨", "长春", "呼和浩特", "兰州", "乌鲁木齐", "拉萨",
+        "西宁", "银川", "昆明", "南宁", "海口", "郑州", "武汉", "长沙", "南昌",
+        "福州", "厦门", "广州", "深圳", "成都", "重庆市"
+    )
 
     def __init__(self, repository: KnowledgeRepository):
         super().__init__()
@@ -149,7 +158,18 @@ class KnowledgeService(QObject):
         )):
             return self._build_route("sh_renmin", "jiangzhe_to_sh_renmin")
 
-        # 其他非覆盖城市 -> unknown（走追问）
+        # 其他明确地区（如新疆/大连）-> 非覆盖地区固定话术
+        detected_region = self._extract_region_mention(text)
+        if detected_region:
+            return {
+                "city": "unknown",
+                "target_store": "unknown",
+                "reason": "out_of_coverage",
+                "store_address": None,
+                "detected_region": detected_region
+            }
+
+        # 未识别地区 -> unknown（走追问）
         return {"city": "unknown", "target_store": "unknown", "reason": "unknown", "store_address": None}
 
     def _build_route(self, target_store: str, reason: str) -> dict:
@@ -169,6 +189,22 @@ class KnowledgeService(QObject):
             "store_name": detail.get("store_name", ""),
             "store_address": detail.get("store_address")
         }
+
+    def _extract_region_mention(self, text: str) -> str:
+        text = (text or "").strip()
+        if not text:
+            return ""
+
+        # 优先命中已知非覆盖地区词典
+        for region in self.NON_COVERAGE_REGION_HINTS:
+            if region in text:
+                return region
+
+        # 兜底：识别常见地名后缀，如“XX省/XX市/XX区/XX县/XX州”
+        m = re.search(r"([\u4e00-\u9fa5]{2,8}(?:省|市|区|县|州|盟|旗))", text)
+        if m:
+            return m.group(1)
+        return ""
 
     def add_item(self, question: str, answer: str, intent: str = "", tags: Optional[List[str]] = None,
                  category: Optional[str] = None) -> Optional[str]:
