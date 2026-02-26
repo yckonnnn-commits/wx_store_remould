@@ -925,6 +925,76 @@ class BrowserService(QObject):
                 return { name: "未知用户", method: 'fallback' };
             }
 
+            function getSessionKeyFromNode(node) {
+                if (!node) return "";
+                var keys = [
+                    node.getAttribute && node.getAttribute('data-session-id'),
+                    node.getAttribute && node.getAttribute('data-chat-id'),
+                    node.getAttribute && node.getAttribute('data-id'),
+                    node.id
+                ];
+                for (var i = 0; i < keys.length; i++) {
+                    var key = keys[i];
+                    if (key && String(key).trim()) return String(key).trim();
+                }
+                return "";
+            }
+
+            function findActiveSessionNode() {
+                var selectors = [
+                    'li[role="listitem"]',
+                    '.session-item',
+                    '[data-session-id]',
+                    '[data-chat-id]',
+                    '[data-id]'
+                ];
+                for (var s = 0; s < selectors.length; s++) {
+                    var nodes = document.querySelectorAll(selectors[s]);
+                    for (var i = 0; i < nodes.length; i++) {
+                        var node = nodes[i];
+                        if (!isVisible(node)) continue;
+                        var cls = String(node.className || '').toLowerCase();
+                        var isActive = (
+                            cls.indexOf('active') !== -1 ||
+                            cls.indexOf('current') !== -1 ||
+                            cls.indexOf('selected') !== -1 ||
+                            node.getAttribute('aria-selected') === 'true'
+                        );
+                        if (isActive) return node;
+                    }
+                }
+                return null;
+            }
+
+            function findSessionByUserName(userName) {
+                var name = String(userName || '').trim();
+                if (!name) return null;
+                var candidates = document.querySelectorAll('[data-session-id], [data-chat-id], [data-id], li[role="listitem"], .session-item');
+                for (var i = 0; i < candidates.length; i++) {
+                    var node = candidates[i];
+                    if (!isVisible(node)) continue;
+                    var text = safeText(node);
+                    if (text && text.indexOf(name) !== -1) {
+                        return node;
+                    }
+                }
+                return null;
+            }
+
+            function getCurrentSessionKey(userName) {
+                var active = findActiveSessionNode();
+                var key = getSessionKeyFromNode(active);
+                if (key) {
+                    return { key: key, method: 'active_node' };
+                }
+                var byName = findSessionByUserName(userName);
+                key = getSessionKeyFromNode(byName);
+                if (key) {
+                    return { key: key, method: 'name_match' };
+                }
+                return { key: "", method: "fallback" };
+            }
+
             function getChatMessages() {
                 var result = { messages: [], userMessages: [], kfMessages: [], debug: [] };
                 
@@ -990,11 +1060,14 @@ class BrowserService(QObject):
 
             var userResult = getCurrentChatUser();
             var msgResult = getChatMessages();
+            var sessionResult = getCurrentSessionKey(userResult.name);
 
             return JSON.stringify({
                 timestamp: new Date().toISOString(),
                 user_name: userResult.name,
                 user_method: userResult.method,
+                chat_session_key: sessionResult.key,
+                chat_session_method: sessionResult.method,
                 messages: msgResult.messages,
                 user_messages: msgResult.userMessages,
                 kf_messages: msgResult.kfMessages,

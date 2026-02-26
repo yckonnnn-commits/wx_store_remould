@@ -55,7 +55,10 @@ class MainWindow(QWidget):
     def _init_services(self):
         self.browser_service = None
 
-        self.knowledge_service = KnowledgeService(self.knowledge_repository)
+        self.knowledge_service = KnowledgeService(
+            self.knowledge_repository,
+            address_config_path=Path("config") / "address.json",
+        )
         self.llm_service = LLMService(self.config_manager)
         self.session_manager = SessionManager()
 
@@ -68,6 +71,8 @@ class MainWindow(QWidget):
             image_categories_path=Path("config") / "image_categories.json",
             system_prompt_doc_path=Path("docs") / "system_prompt_private_ai_customer_service.md",
             playbook_doc_path=Path("docs") / "private_ai_customer_service_playbook.md",
+            reply_templates_path=Path("config") / "reply_templates.json",
+            media_whitelist_path=Path("config") / "media_whitelist.json",
         )
         self.message_processor = None
 

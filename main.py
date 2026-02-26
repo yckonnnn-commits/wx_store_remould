@@ -51,6 +51,9 @@ def init_default_configs():
 
     config_files = [
         'image_categories.json',
+        'address.json',
+        'reply_templates.json',
+        'media_whitelist.json',
     ]
 
     config_dir = Path('config')

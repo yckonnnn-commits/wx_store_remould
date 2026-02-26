@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from PySide6.QtCore import QObject, Signal, QTimer
@@ -14,6 +15,7 @@ from PySide6.QtCore import QObject, Signal, QTimer
 from .private_cs_agent import AgentDecision, CustomerServiceAgent
 from .session_manager import SessionManager
 from ..services.browser_service import BrowserService
+from ..services.conversation_logger import ConversationLogger
 
 
 class MessageProcessor(QObject):
@@ -31,6 +33,7 @@ class MessageProcessor(QObject):
         self.browser = browser_service
         self.sessions = session_manager
         self.agent = agent
+        self.conversation_logger = ConversationLogger(Path("data") / "conversations")
 
         self._running = False
         self._page_ready = False
@@ -79,6 +82,7 @@ class MessageProcessor(QObject):
     def reload_media_config(self):
         """重载 Agent 媒体库索引"""
         self.agent.reload_media_library()
+        self.agent.reload_rule_configs()
         self.log_message.emit("✅ 已重载媒体素材索引")
 
     def reload_keyword_config(self):
@@ -87,6 +91,7 @@ class MessageProcessor(QObject):
 
     def reload_prompt_docs(self):
         success = self.agent.reload_prompt_docs()
+        self.agent.reload_rule_configs()
         if success:
             self.log_message.emit("✅ 已重载系统 Prompt 与 Playbook 文档")
         else:
@@ -147,6 +152,7 @@ class MessageProcessor(QObject):
         data = self._parse_js_payload(result)
         messages = data.get("messages", []) or []
         user_name = (data.get("user_name") or "未知用户").strip() or "未知用户"
+        chat_session_key = (data.get("chat_session_key") or "").strip()
 
         if not messages:
             self.log_message.emit(f"⚠️ 用户 {user_name} 暂无可读消息")
@@ -173,9 +179,20 @@ class MessageProcessor(QObject):
         self._last_processed_marker = marker
         self.message_received.emit({"user_name": user_name, "text": latest_user_message})
 
-        session_id = f"user_{self._hash_id(user_name)}"
+        session_id = self._build_session_id(user_name=user_name, chat_session_key=chat_session_key)
+        user_hash = self._build_user_hash(user_name=user_name, session_id=session_id)
         self.sessions.get_or_create_session(session_id=session_id, user_name=user_name)
         self.sessions.add_message(session_id, latest_user_message, is_user=True, user_name=user_name)
+        self._append_training_event(
+            session_id=session_id,
+            user_id_hash=user_hash,
+            event_type="user_message",
+            payload={
+                "text": latest_user_message,
+                "user_name": user_name,
+                "chat_session_key": chat_session_key,
+            },
+        )
 
         history = self._convert_history(messages)
         decision = self.agent.decide(
@@ -193,13 +210,32 @@ class MessageProcessor(QObject):
                 "route_reason": decision.route_reason,
                 "reply_goal": decision.reply_goal,
                 "media_plan": decision.media_plan,
-                "source": decision.source,
+                "reply_source": decision.reply_source,
+                "source": decision.reply_source,
+                "rule_id": decision.rule_id,
+                "rule_applied": decision.rule_applied,
             }
         )
 
         self.log_message.emit(
-            f"🤖 Agent决策: source={decision.source}, intent={decision.intent}, "
-            f"route={decision.route_reason}, media={decision.media_plan}"
+            f"🤖 Agent决策: source={decision.reply_source}, intent={decision.intent}, "
+            f"route={decision.route_reason}, media={decision.media_plan}, rule={decision.rule_id or '-'}"
+        )
+        self._append_training_event(
+            session_id=session_id,
+            user_id_hash=user_hash,
+            event_type="decision_snapshot",
+            reply_source=decision.reply_source,
+            rule_id=decision.rule_id,
+            model_name=decision.llm_model,
+            payload={
+                "intent": decision.intent,
+                "route_reason": decision.route_reason,
+                "reply_goal": decision.reply_goal,
+                "media_plan": decision.media_plan,
+                "reply_text": decision.reply_text,
+                "rule_applied": decision.rule_applied,
+            },
         )
 
         self._processing_reply = True
@@ -233,6 +269,20 @@ class MessageProcessor(QObject):
             self.sessions.add_message(session_id, decision.reply_text, is_user=False)
             self.sessions.record_reply(session_id)
             self.reply_sent.emit(session_id, decision.reply_text)
+            self._append_training_event(
+                session_id=session_id,
+                user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
+                event_type="assistant_reply",
+                reply_source=decision.reply_source,
+                rule_id=decision.rule_id,
+                model_name=decision.llm_model,
+                payload={
+                    "text": decision.reply_text,
+                    "intent": decision.intent,
+                    "route_reason": decision.route_reason,
+                    "llm_fallback_reason": decision.llm_fallback_reason,
+                },
+            )
 
             extra_video = self.agent.mark_reply_sent(session_id, user_name, decision.reply_text)
             media_queue = list(decision.media_items)
@@ -256,6 +306,12 @@ class MessageProcessor(QObject):
             return
 
         self.log_message.emit(f"🖼️ 准备发送媒体: type={media_type}")
+        self._append_training_event(
+            session_id=session_id,
+            user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
+            event_type="media_attempt",
+            payload={"type": media_type, "path": media_path},
+        )
 
         def on_media_sent(success, result):
             if success:
@@ -270,6 +326,16 @@ class MessageProcessor(QObject):
                     self.log_message.emit(f"❌ 媒体发送失败: type={media_type}, detail={detail}")
                 else:
                     self.log_message.emit(f"❌ 媒体发送失败: type={media_type}")
+            self._append_training_event(
+                session_id=session_id,
+                user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
+                event_type="media_result",
+                payload={
+                    "type": media_type,
+                    "success": bool(success),
+                    "result": result if isinstance(result, (dict, str, int, float, bool, type(None))) else str(result),
+                },
+            )
             self.agent.mark_media_sent(session_id, user_name, item, success=bool(success))
 
             if media_queue:
@@ -333,6 +399,36 @@ class MessageProcessor(QObject):
 
     def _hash_id(self, text: str) -> str:
         return hashlib.md5((text or "").encode("utf-8", errors="ignore")).hexdigest()[:10]
+
+    def _build_session_id(self, user_name: str, chat_session_key: str) -> str:
+        key = (chat_session_key or "").strip()
+        if key:
+            return f"chat_{self._hash_id(key)}"
+        return f"user_{self._hash_id(user_name)}"
+
+    def _build_user_hash(self, user_name: str, session_id: str) -> str:
+        base = (user_name or "").strip() or session_id
+        return self._hash_id(base)
+
+    def _append_training_event(
+        self,
+        session_id: str,
+        user_id_hash: str,
+        event_type: str,
+        payload: Dict[str, Any],
+        reply_source: str = "",
+        rule_id: str = "",
+        model_name: str = "",
+    ) -> None:
+        self.conversation_logger.append_event(
+            session_id=session_id,
+            user_id_hash=user_id_hash,
+            event_type=event_type,
+            payload=payload,
+            reply_source=reply_source,
+            rule_id=rule_id,
+            model_name=model_name,
+        )
 
     def _log_chat_history(self, user_name: str, messages: List[Dict[str, Any]]):
         self.log_message.emit(f"📋 聊天记录: {user_name}，共 {len(messages)} 条")

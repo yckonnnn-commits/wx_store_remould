@@ -17,7 +17,7 @@ class MemoryStore:
     def __init__(self, file_path: Path):
         self.file_path = file_path
         self._data: Dict[str, Any] = {
-            "version": 1,
+            "version": 2,
             "updated_at": "",
             "sessions": {},
             "users": {},
@@ -34,10 +34,11 @@ class MemoryStore:
                     self._data["updated_at"] = loaded.get("updated_at", "")
                     self._data["sessions"] = loaded.get("sessions", {}) or {}
                     self._data["users"] = loaded.get("users", {}) or {}
+            self._ensure_schema()
             return True
         except Exception:
             self._data = {
-                "version": 1,
+                "version": 2,
                 "updated_at": "",
                 "sessions": {},
                 "users": {},
@@ -58,24 +59,32 @@ class MemoryStore:
             return False
 
     def _default_session_state(self, session_id: str, user_hash: str = "") -> Dict[str, Any]:
+        now = datetime.now().isoformat()
         return {
             "session_id": session_id,
             "user_hash": user_hash,
-            "updated_at": datetime.now().isoformat(),
+            "first_seen_at": now,
+            "updated_at": now,
             "address_prompt_count": 0,
             "sent_address_stores": [],
             "address_image_sent_count": 0,
             "contact_image_sent_count": 0,
             "contact_warmup": False,
+            "geo_followup_round": 0,
+            "geo_choice_offered": False,
+            "last_geo_pending": False,
+            "last_detected_region": "",
             "last_route_reason": "unknown",
             "last_intent": "general",
             "last_reply_goal": "解答",
         }
 
     def _default_user_state(self, user_hash: str) -> Dict[str, Any]:
+        now = datetime.now().isoformat()
         return {
             "user_hash": user_hash,
-            "updated_at": datetime.now().isoformat(),
+            "first_seen_at": now,
+            "updated_at": now,
             "video_armed": False,
             "video_sent": False,
             "post_contact_reply_count": 0,
@@ -87,6 +96,7 @@ class MemoryStore:
         if session_id not in sessions:
             sessions[session_id] = self._default_session_state(session_id, user_hash)
         state = sessions[session_id]
+        self._fill_session_defaults(state, session_id=session_id, user_hash=user_hash)
         if user_hash and not state.get("user_hash"):
             state["user_hash"] = user_hash
             state["updated_at"] = datetime.now().isoformat()
@@ -102,7 +112,9 @@ class MemoryStore:
         users = self._data.setdefault("users", {})
         if user_hash not in users:
             users[user_hash] = self._default_user_state(user_hash)
-        return users[user_hash]
+        state = users[user_hash]
+        self._fill_user_defaults(state, user_hash=user_hash)
+        return state
 
     def update_user_state(self, user_hash: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         state = self.get_user_state(user_hash)
@@ -137,3 +149,50 @@ class MemoryStore:
             return datetime.fromisoformat(value)
         except Exception:
             return None
+
+    def _ensure_schema(self) -> None:
+        self._data["version"] = max(int(self._data.get("version", 1) or 1), 2)
+        sessions = self._data.setdefault("sessions", {})
+        users = self._data.setdefault("users", {})
+        for session_id, state in list(sessions.items()):
+            if not isinstance(state, dict):
+                sessions[session_id] = self._default_session_state(session_id)
+                continue
+            self._fill_session_defaults(state, session_id=session_id, user_hash=state.get("user_hash", ""))
+        for user_hash, state in list(users.items()):
+            if not isinstance(state, dict):
+                users[user_hash] = self._default_user_state(user_hash)
+                continue
+            self._fill_user_defaults(state, user_hash=user_hash)
+
+    def _fill_session_defaults(self, state: Dict[str, Any], session_id: str, user_hash: str = "") -> None:
+        now = datetime.now().isoformat()
+        state.setdefault("session_id", session_id)
+        if user_hash:
+            state.setdefault("user_hash", user_hash)
+        else:
+            state.setdefault("user_hash", "")
+        state.setdefault("first_seen_at", now)
+        state.setdefault("updated_at", now)
+        state.setdefault("address_prompt_count", 0)
+        state.setdefault("sent_address_stores", [])
+        state.setdefault("address_image_sent_count", 0)
+        state.setdefault("contact_image_sent_count", 0)
+        state.setdefault("contact_warmup", False)
+        state.setdefault("geo_followup_round", 0)
+        state.setdefault("geo_choice_offered", False)
+        state.setdefault("last_geo_pending", False)
+        state.setdefault("last_detected_region", "")
+        state.setdefault("last_route_reason", "unknown")
+        state.setdefault("last_intent", "general")
+        state.setdefault("last_reply_goal", "解答")
+
+    def _fill_user_defaults(self, state: Dict[str, Any], user_hash: str) -> None:
+        now = datetime.now().isoformat()
+        state.setdefault("user_hash", user_hash)
+        state.setdefault("first_seen_at", now)
+        state.setdefault("updated_at", now)
+        state.setdefault("video_armed", False)
+        state.setdefault("video_sent", False)
+        state.setdefault("post_contact_reply_count", 0)
+        state.setdefault("recent_reply_hashes", [])

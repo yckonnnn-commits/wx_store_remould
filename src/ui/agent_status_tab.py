@@ -115,6 +115,8 @@ class AgentStatusTab(QWidget):
                     f"地址图: {status.get('address_image_count', 0)}",
                     f"联系方式图: {status.get('contact_image_count', 0)}",
                     f"视频: {status.get('video_media_count', 0)}",
+                    f"模板: {'已加载' if status.get('template_loaded') else '缺失'}",
+                    f"白名单: {status.get('media_whitelist_count', 0)}",
                     f"TTL: {status.get('memory_ttl_days', 30)}天",
                 ]
             )

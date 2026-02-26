@@ -1,29 +1,35 @@
 {
-  "version": 1,
-  "updated_at": "2026-02-26T21:32:22.967031",
+  "version": 2,
+  "updated_at": "2026-02-26T23:20:47.253340",
   "sessions": {
     "user_f4279bcac8": {
       "session_id": "user_f4279bcac8",
       "user_hash": "f4279bcac8",
-      "updated_at": "2026-02-26T21:32:19.969339",
+      "updated_at": "2026-02-26T23:20:44.255030",
       "address_prompt_count": 2,
       "sent_address_stores": [
-        "sh_xuhui",
-        "beijing_chaoyang"
+        "beijing_chaoyang",
+        "sh_jingan",
+        "sh_xuhui"
       ],
-      "address_image_sent_count": 2,
+      "address_image_sent_count": 3,
       "contact_image_sent_count": 1,
       "contact_warmup": false,
-      "last_route_reason": "unknown",
-      "last_intent": "contact",
-      "last_reply_goal": "推进购买意图",
-      "contact_followup_prompt_count": 1
+      "last_route_reason": "sh_district_map:嘉定",
+      "last_intent": "address",
+      "last_reply_goal": "解答",
+      "contact_followup_prompt_count": 1,
+      "first_seen_at": "2026-02-26T23:16:14.399149",
+      "geo_followup_round": 0,
+      "geo_choice_offered": false,
+      "last_geo_pending": false,
+      "last_detected_region": "上海"
     }
   },
   "users": {
     "f4279bcac8": {
       "user_hash": "f4279bcac8",
-      "updated_at": "2026-02-26T21:32:22.966891",
+      "updated_at": "2026-02-26T23:20:47.253264",
       "video_armed": false,
       "video_sent": true,
       "post_contact_reply_count": 0,
@@ -52,8 +58,18 @@
         "姐姐我们目前门店在北京朝阳和上海5家静安人广虹口五角场徐汇其他城市暂时没有门店如果您方便来店我可以帮您安排试戴和预约",
         "姐姐我们目前门店在北京朝阳和上海5家静安人广虹口五角场徐汇其他城市暂时没有门店如果您方便来店我可以帮您安排试戴和购买流程",
         "姐姐我们是私人定制的假发根据不同的材质正常3000500050006000都有具体要看您的头围脸型和需求方案先聊需求我再给您合适建议",
-        "姐姐您看下我刚发的联系方式图按图添加后跟我说一声我马上接着帮您安排"
-      ]
+        "姐姐您看下我刚发的联系方式图按图添加后跟我说一声我马上接着帮您安排",
+        "姐姐您在什么城市区域呀方便告诉我吗我可以帮您针对性推荐门店我们目前北京朝阳1家上海5家静安人广虹口五角场徐汇",
+        "姐姐再确认下您在上海哪个区或附近地标呢我马上给您对门店",
+        "姐姐我们是私人定制的假发根据不同的材质正常3000500050006000都有具体要看您的头围脸型和需求方案先聊需求我再给您合适建议",
+        "非常牢固我们有客户戴着做过山车都没问题",
+        "夏天完全可以戴哦我们的假发采用植物网底和透气孔设计清爽不闷汗跳广场舞买菜遛弯都自在舒服呢",
+        "姐姐您在静安徐汇杨浦附近吗不确定也没关系告诉我个地标我也能帮您匹配",
+        "姐姐推荐您去上海静安门店我给您发一张位置图您跟着图走会更直观",
+        "姐姐您方便告诉我所在城市和区域吗我帮您匹配最近门店并安排预约",
+        "姐姐推荐您去上海徐汇门店我给您发一张位置图您跟着图走会更直观"
+      ],
+      "first_seen_at": "2026-02-26T23:16:14.399156"
     }
   }
 }

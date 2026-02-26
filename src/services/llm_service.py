@@ -18,6 +18,7 @@ class LLMWorker(QThread):
     """异步模型调用线程"""
 
     result_ready = Signal(str, bool, str)
+    DEFAULT_TEMPERATURE = 0.2
 
     def __init__(
         self,
@@ -74,7 +75,7 @@ class LLMWorker(QThread):
         payload = {
             "model": model,
             "messages": [{"role": "system", "content": self.system_prompt}, *self.messages],
-            "temperature": 0.7,
+            "temperature": self.DEFAULT_TEMPERATURE,
             "max_tokens": self.max_tokens,
         }
         req = urllib.request.Request(
@@ -99,7 +100,7 @@ class LLMWorker(QThread):
         payload = {
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.7,
+                "temperature": self.DEFAULT_TEMPERATURE,
                 "maxOutputTokens": self.max_tokens,
             },
         }
@@ -133,7 +134,7 @@ class LLMWorker(QThread):
             "model": model,
             "input": {"prompt": prompt},
             "parameters": {
-                "temperature": 0.7,
+                "temperature": self.DEFAULT_TEMPERATURE,
                 "max_tokens": self.max_tokens,
             },
         }
@@ -236,6 +237,9 @@ class LLMService(QObject):
 
     def get_system_prompt(self) -> str:
         return self._system_prompt
+
+    def get_current_model_name(self) -> str:
+        return self.config_manager.get_current_model()
 
     def load_prompt_docs(self, system_prompt_path: Path, playbook_path: Optional[Path] = None) -> bool:
         """从文档加载基础 prompt（可选附加 playbook）。"""

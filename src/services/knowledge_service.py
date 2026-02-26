@@ -3,9 +3,10 @@
 提供知识库相关的业务逻辑封装
 """
 
+import json
 import re
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Set
 from PySide6.QtCore import QObject, Signal
 
 from ..data.knowledge_repository import KnowledgeRepository, KnowledgeItem
@@ -80,6 +81,7 @@ class KnowledgeService(QObject):
         "新疆", "西藏", "青海", "宁夏", "甘肃", "云南", "贵州", "广西", "海南",
         "黑龙江", "吉林", "辽宁", "山东", "山西", "陕西", "河南", "湖北", "湖南",
         "江西", "福建", "广东", "四川", "重庆", "安徽",
+        "东北", "西北", "西南", "华南", "华北",
         "大连", "沈阳", "哈尔滨", "长春", "呼和浩特", "兰州", "乌鲁木齐", "拉萨",
         "西宁", "银川", "昆明", "南宁", "海口", "郑州", "武汉", "长沙", "南昌",
         "福州", "厦门", "广州", "深圳", "成都", "重庆市"
@@ -103,16 +105,79 @@ class KnowledgeService(QObject):
         "我想问", "麻烦问下", "麻烦问一下"
     )
 
-    def __init__(self, repository: KnowledgeRepository):
+    def __init__(self, repository: KnowledgeRepository, address_config_path: Optional[Path] = None):
         super().__init__()
         self.repository = repository
+        self.address_config_path = address_config_path or (Path("config") / "address.json")
+        self._address_region_tokens: Set[str] = set()
+        self._address_token_to_canonical: Dict[str, str] = {}
 
         # 连接仓库信号
         self.repository.data_changed.connect(self._on_data_changed)
+        self.reload_address_config()
 
     def _on_data_changed(self):
         """数据变更处理"""
         pass  # 可以在需要时添加通用处理
+
+    def reload_address_config(self) -> None:
+        """加载非覆盖地区词典（config/address.json）。"""
+        self._address_region_tokens = set()
+        self._address_token_to_canonical = {}
+        if not self.address_config_path.exists():
+            return
+        try:
+            data = json.loads(self.address_config_path.read_text(encoding="utf-8"))
+            provinces = data.get("provinces", []) if isinstance(data, dict) else []
+            for item in provinces:
+                if not isinstance(item, dict):
+                    continue
+                province_name = str(item.get("name", "")).strip()
+                if province_name:
+                    self._register_region_name(province_name, canonical=province_name)
+                for city in item.get("cities", []) or []:
+                    city_name = str(city).strip()
+                    if city_name:
+                        canonical = province_name or city_name
+                        self._register_region_name(city_name, canonical=canonical)
+        except Exception:
+            self._address_region_tokens = set()
+            self._address_token_to_canonical = {}
+
+    def _register_region_name(self, name: str, canonical: str) -> None:
+        for token in self._expand_region_tokens(name):
+            if len(token) < 2:
+                continue
+            self._address_region_tokens.add(token)
+            self._address_token_to_canonical.setdefault(token, canonical)
+
+    def _expand_region_tokens(self, name: str) -> Set[str]:
+        raw = str(name or "").strip()
+        if not raw:
+            return set()
+        tokens: Set[str] = {raw}
+        suffixes = (
+            "特别行政区",
+            "维吾尔自治区",
+            "壮族自治区",
+            "回族自治区",
+            "自治区",
+            "自治州",
+            "地区",
+            "省",
+            "市",
+            "区",
+            "县",
+            "州",
+            "盟",
+            "旗",
+        )
+        for suffix in suffixes:
+            if raw.endswith(suffix):
+                trimmed = raw[: -len(suffix)].strip()
+                if len(trimmed) >= 2:
+                    tokens.add(trimmed)
+        return {t for t in tokens if t}
 
     def search(self, query: str) -> List[KnowledgeItem]:
         """搜索知识库"""
@@ -229,7 +294,14 @@ class KnowledgeService(QObject):
         """根据用户地理位置解析推荐门店（仅路由，不生成文案）"""
         text = (user_text or "").strip()
         if not text:
-            return {"city": "unknown", "target_store": "unknown", "reason": "unknown", "store_address": None}
+            return {
+                "city": "unknown",
+                "target_store": "unknown",
+                "reason": "unknown",
+                "route_type": "unknown",
+                "store_address": None,
+                "detected_region": "",
+            }
 
         neg_beijing = any(k in text for k in ("不在北京", "不是北京", "不去北京"))
         neg_shanghai = any(k in text for k in ("不在上海", "不是上海", "不去上海"))
@@ -252,7 +324,14 @@ class KnowledgeService(QObject):
 
         # 只说上海未带区：追问区，不直接给门店
         if not neg_shanghai and "上海" in text:
-            return {"city": "shanghai", "target_store": "unknown", "reason": "shanghai_need_district", "store_address": None}
+            return {
+                "city": "shanghai",
+                "target_store": "unknown",
+                "reason": "shanghai_need_district",
+                "route_type": "need_district",
+                "store_address": None,
+                "detected_region": "上海",
+            }
 
         # 江浙地区 -> 上海人民广场
         if any(k in text for k in (
@@ -268,12 +347,20 @@ class KnowledgeService(QObject):
                 "city": "unknown",
                 "target_store": "unknown",
                 "reason": "out_of_coverage",
+                "route_type": "non_coverage",
                 "store_address": None,
                 "detected_region": detected_region
             }
 
         # 未识别地区 -> unknown（走追问）
-        return {"city": "unknown", "target_store": "unknown", "reason": "unknown", "store_address": None}
+        return {
+            "city": "unknown",
+            "target_store": "unknown",
+            "reason": "unknown",
+            "route_type": "unknown",
+            "store_address": None,
+            "detected_region": "",
+        }
 
     def _build_route(self, target_store: str, reason: str) -> dict:
         detail = self.STORE_DETAILS.get(target_store, {})
@@ -281,8 +368,10 @@ class KnowledgeService(QObject):
             "city": detail.get("city", "unknown"),
             "target_store": target_store,
             "reason": reason,
+            "route_type": "coverage",
             "store_address": detail.get("store_address"),
-            "store_name": detail.get("store_name", "")
+            "store_name": detail.get("store_name", ""),
+            "detected_region": "",
         }
 
     def get_store_display(self, target_store: str) -> dict:
@@ -297,6 +386,12 @@ class KnowledgeService(QObject):
         text = (text or "").strip()
         if not text:
             return ""
+
+        # 优先 address.json 词典，覆盖范围外地区都按非覆盖处理
+        if self._address_region_tokens:
+            for token in sorted(self._address_region_tokens, key=len, reverse=True):
+                if token and token in text:
+                    return self._address_token_to_canonical.get(token, token)
 
         # 优先命中已知非覆盖地区词典
         for region in self.NON_COVERAGE_REGION_HINTS:
