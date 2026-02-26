@@ -84,6 +84,24 @@ class KnowledgeService(QObject):
         "西宁", "银川", "昆明", "南宁", "海口", "郑州", "武汉", "长沙", "南昌",
         "福州", "厦门", "广州", "深圳", "成都", "重庆市"
     )
+    PURCHASE_INTENT_KEYWORDS = (
+        "怎么买",
+        "怎么购买",
+        "我想买",
+        "能买到吗",
+        "在哪里买",
+        "怎么下单",
+        "怎么订",
+    )
+    PRICE_KEYWORDS = ("价格", "多少钱", "价位", "报价", "收费", "预算", "贵", "便宜")
+    WEARING_KEYWORDS = (
+        "佩戴", "麻烦", "闷", "热", "自然", "掉", "会掉吗", "材质", "真人发",
+        "好打理", "清洗", "梳", "售后", "保养", "透气"
+    )
+    GENERIC_PREFIXES = (
+        "好的", "好", "嗯", "额", "那个", "请问", "想问下", "想问一下",
+        "我想问", "麻烦问下", "麻烦问一下"
+    )
 
     def __init__(self, repository: KnowledgeRepository):
         super().__init__()
@@ -112,15 +130,100 @@ class KnowledgeService(QObject):
         Returns:
             匹配到的答案，如果没有则返回 None
         """
-        result = self.repository.find_best_match(user_message, threshold)
+        query = (user_message or "").strip()
+        if not query:
+            return None
+
+        result = self.repository.find_best_match(query, threshold)
         if result:
             return result[0]  # 返回答案文本
+
+        normalized_query = self._normalize_for_kb(query)
+        if normalized_query and normalized_query != query:
+            relaxed_threshold = max(0.35, float(threshold) - 0.2)
+            result = self.repository.find_best_match(normalized_query, relaxed_threshold)
+            if result:
+                return result[0]
+
+        intent_fallback = self._find_answer_by_intent_hint(normalized_query or query)
+        if intent_fallback:
+            return intent_fallback
         return None
+
+    def _normalize_for_kb(self, text: str) -> str:
+        normalized = (text or "").strip()
+        if not normalized:
+            return ""
+
+        for prefix in self.GENERIC_PREFIXES:
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):].strip()
+
+        normalized = re.sub(r"[，。！？、,.!?~\s]+", "", normalized)
+        normalized = normalized.replace("是多少", "多少").replace("什么价格", "价格多少")
+        return normalized
+
+    def _find_answer_by_intent_hint(self, query: str) -> Optional[str]:
+        text = (query or "").strip()
+        if not text:
+            return None
+
+        intents: List[str] = []
+        if any(k in text for k in self.PRICE_KEYWORDS):
+            intents.append("price")
+        if self.is_address_query(text):
+            intents.append("address")
+        if any(k in text for k in self.WEARING_KEYWORDS):
+            intents.append("wearing")
+        if not intents:
+            intents.append("general")
+
+        items = self.repository.get_all()
+        for intent in intents:
+            candidates = [item for item in items if (item.intent or "").lower() == intent]
+            if not candidates:
+                continue
+
+            best_item = None
+            best_score = -1.0
+            for item in candidates:
+                score = self._simple_overlap_score(text, item.question)
+                if score > best_score:
+                    best_score = score
+                    best_item = item
+
+            min_score = 0.15 if intent == "general" else 0.05
+            if best_item and best_item.answer and best_score >= min_score:
+                return best_item.answer
+        return None
+
+    def _simple_overlap_score(self, a: str, b: str) -> float:
+        na = self._normalize_for_kb(a)
+        nb = self._normalize_for_kb(b)
+        if not na or not nb:
+            return 0.0
+        if na == nb:
+            return 1.0
+        if na in nb or nb in na:
+            return 0.9
+
+        set_a = set(na)
+        set_b = set(nb)
+        if not set_a or not set_b:
+            return 0.0
+        return len(set_a & set_b) / len(set_a | set_b)
 
     def is_address_query(self, text: str) -> bool:
         """是否为地址相关咨询"""
         text = (text or "").strip()
         return bool(text) and any(keyword in text for keyword in self.ADDRESS_KEYWORDS)
+
+    def is_purchase_intent(self, text: str) -> bool:
+        """是否包含明确购买意图关键词"""
+        normalized = re.sub(r"\s+", "", (text or ""))
+        if not normalized:
+            return False
+        return any(keyword in normalized for keyword in self.PURCHASE_INTENT_KEYWORDS)
 
     def resolve_store_recommendation(self, user_text: str) -> dict:
         """根据用户地理位置解析推荐门店（仅路由，不生成文案）"""

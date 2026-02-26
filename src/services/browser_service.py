@@ -4,9 +4,10 @@
 """
 
 import json
-from typing import Callable, Optional
-from PySide6.QtCore import QObject, Signal, QTimer, Qt, QCoreApplication
-from PySide6.QtGui import QKeyEvent
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional
+from PySide6.QtCore import QObject, Signal, QTimer, Qt, QCoreApplication, QPointF
+from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
 from PySide6.QtCore import QUrl
@@ -126,6 +127,409 @@ class BrowserService(QObject):
         if exec_id in self._pending_callbacks:
             callback = self._pending_callbacks.pop(exec_id)
             callback(False, "执行超时")
+
+    def _parse_js_payload(self, payload: Any) -> Dict[str, Any]:
+        """统一解析 runJavaScript 返回结果。"""
+        if isinstance(payload, dict):
+            return payload
+        if isinstance(payload, str):
+            try:
+                parsed = json.loads(payload)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                return {}
+        return {}
+
+    def _native_left_click(self, x: float, y: float) -> tuple[bool, str]:
+        """在 WebView 内发送原生左键点击。"""
+        try:
+            target_widget = self.web_view.focusProxy() or self.web_view
+            local_pos = QPointF(float(x), float(y))
+            global_pos = target_widget.mapToGlobal(local_pos.toPoint())
+            global_pos_f = QPointF(global_pos.x(), global_pos.y())
+
+            press_event = QMouseEvent(
+                QMouseEvent.MouseButtonPress,
+                local_pos,
+                global_pos_f,
+                Qt.LeftButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+            QCoreApplication.sendEvent(target_widget, press_event)
+
+            release_event = QMouseEvent(
+                QMouseEvent.MouseButtonRelease,
+                local_pos,
+                global_pos_f,
+                Qt.LeftButton,
+                Qt.NoButton,
+                Qt.NoModifier,
+            )
+            QCoreApplication.sendEvent(target_widget, release_event)
+            return True, ""
+        except Exception as exc:
+            return False, str(exc)
+
+    def _native_press_enter(self) -> tuple[bool, str]:
+        """在 WebView 内发送原生 Enter 键。"""
+        try:
+            self.web_view.setFocus()
+            target_widget = self.web_view.focusProxy() or self.web_view
+
+            key_press = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Return, Qt.NoModifier)
+            QCoreApplication.sendEvent(target_widget, key_press)
+
+            key_release = QKeyEvent(QKeyEvent.KeyRelease, Qt.Key_Return, Qt.NoModifier)
+            QCoreApplication.sendEvent(target_widget, key_release)
+            return True, ""
+        except Exception as exc:
+            return False, str(exc)
+
+    def _get_media_dialog_state(self, callback: Callable):
+        """检测媒体发送确认弹窗状态。"""
+        script = r"""
+        (function() {
+            function safeText(el) {
+                return (el && (el.textContent || el.innerText) || "").trim();
+            }
+            function isVisible(el) {
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 5 || rect.height < 5) return false;
+                return true;
+            }
+            function collectDialogRoots() {
+                var selectors = [
+                    '.weui-desktop-dialog__wrp',
+                    '.weui-desktop-dialog_wrp',
+                    '.weui-desktop-dialog',
+                    '.weui-desktop-modal',
+                    '.weui-dialog',
+                    '.modal',
+                    '.dialog',
+                    '[role="dialog"]'
+                ];
+                var roots = [];
+                for (var s = 0; s < selectors.length; s++) {
+                    var nodes = document.querySelectorAll(selectors[s]);
+                    for (var i = 0; i < nodes.length; i++) {
+                        var node = nodes[i];
+                        if (!isVisible(node)) continue;
+                        if (roots.indexOf(node) === -1) {
+                            roots.push(node);
+                        }
+                    }
+                }
+                return roots;
+            }
+            function findSendButtonInDialogs(dialogRoots) {
+                var candidates = [];
+                for (var i = 0; i < dialogRoots.length; i++) {
+                    var root = dialogRoots[i];
+                    var nodes = Array.from(root.querySelectorAll('button, [role="button"], a, div, span')).filter(isVisible);
+                    for (var j = 0; j < nodes.length; j++) {
+                        var node = nodes[j];
+                        var text = safeText(node).replace(/\s+/g, '');
+                        if (!text || !/^发送/.test(text)) continue;
+                        if (text.indexOf('优惠券') !== -1) continue;
+                        var rect = node.getBoundingClientRect();
+                        if (!rect || rect.width < 20 || rect.height < 16) continue;
+                        candidates.push({
+                            text: text,
+                            x: rect.left + rect.width / 2,
+                            y: rect.top + rect.height / 2,
+                            area: rect.width * rect.height
+                        });
+                    }
+                }
+                if (!candidates.length) {
+                    return { found: false };
+                }
+                candidates.sort(function(a, b) {
+                    var aHasCount = /\(\d+\)/.test(a.text);
+                    var bHasCount = /\(\d+\)/.test(b.text);
+                    if (aHasCount !== bHasCount) return aHasCount ? -1 : 1;
+                    return b.area - a.area;
+                });
+                return {
+                    found: true,
+                    text: candidates[0].text,
+                    x: candidates[0].x,
+                    y: candidates[0].y
+                };
+            }
+
+            var dialogRoots = collectDialogRoots();
+            var sendBtn = findSendButtonInDialogs(dialogRoots);
+            return JSON.stringify({
+                found: true,
+                dialog_visible: dialogRoots.length > 0,
+                dialog_count: dialogRoots.length,
+                send_button_in_dialog_visible: !!sendBtn.found,
+                send_button_text: sendBtn.text || '',
+                send_button_x: sendBtn.x || 0,
+                send_button_y: sendBtn.y || 0
+            });
+        })()
+        """
+        self.run_javascript(script, callback)
+
+    def _get_chat_media_signature(self, callback: Callable):
+        """抓取当前会话媒体发送签名，用于确认图片是否真正发出。"""
+        script = r"""
+        (function() {
+            function safeText(el) {
+                return (el && (el.textContent || el.innerText) || "").trim();
+            }
+            function isVisible(el) {
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 5 || rect.height < 5) return false;
+                return true;
+            }
+            function hasMediaNode(item) {
+                var mediaClass = item.querySelector(
+                    '.img-msg, .image-msg, .video-msg, [class*="img-msg"], [class*="image-msg"], [class*="video-msg"], [class*="img_msg"], [class*="image_msg"], [class*="video_msg"]'
+                );
+                if (mediaClass) return true;
+
+                var nodes = Array.from(item.querySelectorAll('img,video,canvas'));
+                for (var i = 0; i < nodes.length; i++) {
+                    var node = nodes[i];
+                    var cls = String(node.className || '').toLowerCase();
+                    var src = String((node.getAttribute && node.getAttribute('src')) || '').toLowerCase();
+                    var token = cls + ' ' + src;
+                    if (token.indexOf('avatar') !== -1 || token.indexOf('head') !== -1 || token.indexOf('profile') !== -1) {
+                        continue;
+                    }
+                    var parentToken = '';
+                    if (node.parentElement) {
+                        parentToken = String(node.parentElement.className || '').toLowerCase();
+                    }
+                    if (parentToken.indexOf('avatar') !== -1 || parentToken.indexOf('head') !== -1 || parentToken.indexOf('profile') !== -1) {
+                        continue;
+                    }
+                    var rect = node.getBoundingClientRect();
+                    if (rect && rect.width >= 72 && rect.height >= 60) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            function collectDialogRoots() {
+                var selectors = [
+                    '.weui-desktop-dialog__wrp',
+                    '.weui-desktop-dialog_wrp',
+                    '.weui-desktop-dialog',
+                    '.weui-desktop-modal',
+                    '.weui-dialog',
+                    '.modal',
+                    '.dialog',
+                    '[role="dialog"]'
+                ];
+                var roots = [];
+                for (var s = 0; s < selectors.length; s++) {
+                    var nodes = document.querySelectorAll(selectors[s]);
+                    for (var i = 0; i < nodes.length; i++) {
+                        var node = nodes[i];
+                        if (!isVisible(node)) continue;
+                        if (roots.indexOf(node) === -1) {
+                            roots.push(node);
+                        }
+                    }
+                }
+                return roots;
+            }
+            function findMediaSendButton(dialogRoots) {
+                var candidates = [];
+                for (var i = 0; i < dialogRoots.length; i++) {
+                    var root = dialogRoots[i];
+                    var nodes = Array.from(root.querySelectorAll('button, [role="button"], a, div, span')).filter(isVisible);
+                    for (var j = 0; j < nodes.length; j++) {
+                        var node = nodes[j];
+                        var text = safeText(node).replace(/\s+/g, '');
+                        if (!text || !/^发送/.test(text)) continue;
+                        if (text.indexOf('优惠券') !== -1) continue;
+                        var rect = node.getBoundingClientRect();
+                        if (!rect || rect.width < 20 || rect.height < 16) continue;
+                        candidates.push({
+                            text: text,
+                            x: rect.left + rect.width / 2,
+                            y: rect.top + rect.height / 2,
+                            area: rect.width * rect.height
+                        });
+                    }
+                }
+                if (!candidates.length) {
+                    return { found: false };
+                }
+                candidates.sort(function(a, b) {
+                    var aHasCount = /\(\d+\)/.test(a.text);
+                    var bHasCount = /\(\d+\)/.test(b.text);
+                    if (aHasCount !== bHasCount) return aHasCount ? -1 : 1;
+                    return b.area - a.area;
+                });
+                return {
+                    found: true,
+                    text: candidates[0].text,
+                    x: candidates[0].x,
+                    y: candidates[0].y
+                };
+            }
+
+            var chatScrollView = document.getElementById('chat-scroll-view') || document.querySelector('.chat-scroll-view');
+            var dialogRoots = collectDialogRoots();
+            var pendingBtn = findMediaSendButton(dialogRoots);
+            if (!chatScrollView) {
+                return JSON.stringify({
+                    found: false,
+                    error: '未找到聊天滚动容器',
+                    dialog_visible: dialogRoots.length > 0,
+                    pending_media_send_visible: !!pendingBtn.found,
+                    pending_media_send_text: pendingBtn.text || ''
+                });
+            }
+
+            var items = Array.from(chatScrollView.querySelectorAll('.message-item')).filter(isVisible);
+            var kfItems = items.filter(function(item) {
+                return (item.className || '').indexOf('justify-end') !== -1;
+            });
+
+            var kfMediaCount = 0;
+            var lastKfText = '';
+            var lastKfHasText = false;
+            for (var i = 0; i < kfItems.length; i++) {
+                var item = kfItems[i];
+                var textEl = item.querySelector('.text-msg');
+                var text = safeText(textEl);
+                var hasText = !!text;
+                if (hasMediaNode(item)) {
+                    kfMediaCount += 1;
+                }
+                lastKfText = text;
+                lastKfHasText = hasText;
+            }
+
+            return JSON.stringify({
+                found: true,
+                total_count: items.length,
+                kf_total_count: kfItems.length,
+                kf_media_count: kfMediaCount,
+                last_kf_text: lastKfText,
+                last_kf_has_text: lastKfHasText,
+                dialog_visible: dialogRoots.length > 0,
+                pending_media_send_visible: !!pendingBtn.found,
+                pending_media_send_text: pendingBtn.text || ''
+            });
+        })()
+        """
+        self.run_javascript(script, callback)
+
+    def _find_media_send_button(self, callback: Callable):
+        """查找媒体确认发送按钮位置。"""
+        script = r"""
+        (function() {
+            function safeText(el) {
+                return (el && (el.textContent || el.innerText) || "").trim();
+            }
+            function isVisible(el) {
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 5 || rect.height < 5) return false;
+                return true;
+            }
+            function collectDialogRoots() {
+                var selectors = [
+                    '.weui-desktop-dialog__wrp',
+                    '.weui-desktop-dialog_wrp',
+                    '.weui-desktop-dialog',
+                    '.weui-desktop-modal',
+                    '.weui-dialog',
+                    '.modal',
+                    '.dialog',
+                    '[role="dialog"]'
+                ];
+                var roots = [];
+                for (var s = 0; s < selectors.length; s++) {
+                    var nodes = document.querySelectorAll(selectors[s]);
+                    for (var i = 0; i < nodes.length; i++) {
+                        var node = nodes[i];
+                        if (!isVisible(node)) continue;
+                        if (roots.indexOf(node) === -1) {
+                            roots.push(node);
+                        }
+                    }
+                }
+                return roots;
+            }
+
+            var dialogRoots = collectDialogRoots();
+            if (!dialogRoots.length) {
+                return JSON.stringify({ found: false, error: '未检测到媒体发送弹窗' });
+            }
+            var candidates = [];
+            for (var i = 0; i < dialogRoots.length; i++) {
+                var root = dialogRoots[i];
+                var nodes = Array.from(root.querySelectorAll('button, [role="button"], a, div, span')).filter(isVisible);
+                for (var j = 0; j < nodes.length; j++) {
+                    var node = nodes[j];
+                    var text = safeText(node).replace(/\s+/g, '');
+                    if (!text || !/^发送/.test(text)) continue;
+                    if (text.indexOf('优惠券') !== -1) continue;
+                    var rect = node.getBoundingClientRect();
+                    if (!rect || rect.width < 20 || rect.height < 16) continue;
+                    candidates.push({
+                        text: text,
+                        x: rect.left + rect.width / 2,
+                        y: rect.top + rect.height / 2,
+                        area: rect.width * rect.height
+                    });
+                }
+            }
+            if (!candidates.length) {
+                return JSON.stringify({ found: false, error: '未找到媒体发送按钮' });
+            }
+            candidates.sort(function(a, b) {
+                var aHasCount = /\(\d+\)/.test(a.text);
+                var bHasCount = /\(\d+\)/.test(b.text);
+                if (aHasCount !== bHasCount) return aHasCount ? -1 : 1;
+                return b.area - a.area;
+            });
+            return JSON.stringify({
+                found: true,
+                text: candidates[0].text,
+                x: candidates[0].x,
+                y: candidates[0].y
+            });
+        })()
+        """
+        self.run_javascript(script, callback)
+
+    def _media_send_confirmed(self, baseline: Dict[str, Any], current: Dict[str, Any]) -> bool:
+        """判断媒体是否已真实发出。"""
+        if not current.get("found"):
+            return False
+
+        try:
+            base_media = int(baseline.get("kf_media_count", -1))
+            curr_media = int(current.get("kf_media_count", 0))
+            if base_media >= 0 and curr_media > base_media:
+                return True
+        except Exception:
+            return False
+
+        return False
 
     def find_and_click_first_unread(self, callback: Callable):
         """查找并点击第一个未读消息
@@ -736,11 +1140,7 @@ class BrowserService(QObject):
             self.page.runJavaScript(script)
 
     def send_image(self, image_path: str, callback: Callable = None):
-        """发送图片 - 使用 Qt 原生鼠标点击和键盘事件"""
-        from pathlib import Path
-        from PySide6.QtGui import QMouseEvent
-        from PySide6.QtCore import QPointF
-        
+        """发送图片并验证是否真正出现在会话中。"""
         if not image_path or not Path(image_path).exists():
             if callback:
                 callback(False, {"error": "图片路径不存在"})
@@ -750,141 +1150,225 @@ class BrowserService(QObject):
         if hasattr(self.page, "next_file_selection"):
             self.page.next_file_selection = [str(Path(image_path).resolve())]
 
+        state: Dict[str, Any] = {
+            "done": False,
+            "baseline": {},
+            "trigger_method": "unknown",
+            "verify_attempt": 0,
+            "confirm_clicked": False,
+            "enter_error": "",
+            "enter_attempt": 0,
+            "dialog_closed": False,
+        }
+        max_verify_attempts = 10
+        max_enter_attempts = 2
+
+        def finish(success: bool, payload: Dict[str, Any]):
+            if state["done"]:
+                return
+            state["done"] = True
+            if callback:
+                callback(success, payload)
+
+        def poll_delivery():
+            if state["done"]:
+                return
+            state["verify_attempt"] += 1
+
+            def on_signature_result(success, result):
+                signature = self._parse_js_payload(result) if success else {}
+                pending_visible = bool(signature.get("pending_media_send_visible", False))
+                dialog_visible = bool(signature.get("dialog_visible", False))
+                if not pending_visible and not dialog_visible:
+                    state["dialog_closed"] = True
+
+                if (
+                    self._media_send_confirmed(state.get("baseline", {}), signature)
+                    and not pending_visible
+                    and not dialog_visible
+                    and state.get("dialog_closed", False)
+                ):
+                    finish(
+                        True,
+                        {
+                            "success": True,
+                            "step": "verified",
+                            "triggerMethod": state.get("trigger_method", "unknown"),
+                            "verifyAttempts": state["verify_attempt"],
+                            "sendMethod": "native_click_enter_with_delivery_check",
+                            "signature": signature,
+                        },
+                    )
+                    return
+
+                if pending_visible and not state["confirm_clicked"]:
+                    state["confirm_clicked"] = True
+
+                    def on_find_confirm_btn(btn_success, btn_result):
+                        btn_data = self._parse_js_payload(btn_result) if btn_success else {}
+                        if btn_data.get("found"):
+                            clicked, click_err = self._native_left_click(
+                                btn_data.get("x", 0),
+                                btn_data.get("y", 0),
+                            )
+                            if not clicked:
+                                finish(
+                                    False,
+                                    {
+                                        "error": f"点击媒体发送按钮失败: {click_err}",
+                                        "step": "confirm_click",
+                                        "triggerMethod": state.get("trigger_method", "unknown"),
+                                    },
+                                )
+                                return
+                            # 部分页面确认后仍要求回车，再补一次 Enter 提高稳定性。
+                            QTimer.singleShot(250, self._native_press_enter)
+
+                        if state["verify_attempt"] >= max_verify_attempts:
+                            finish(
+                                False,
+                                {
+                                    "error": "图片疑似仅被选择，未确认发送",
+                                    "step": "verify_timeout",
+                                    "triggerMethod": state.get("trigger_method", "unknown"),
+                                    "signature": signature,
+                                },
+                            )
+                            return
+                        QTimer.singleShot(600, poll_delivery)
+
+                    self._find_media_send_button(on_find_confirm_btn)
+                    return
+
+                if state["verify_attempt"] >= max_verify_attempts:
+                    finish(
+                        False,
+                        {
+                            "error": "图片未检测到实际发送结果",
+                            "step": "verify_timeout",
+                            "triggerMethod": state.get("trigger_method", "unknown"),
+                            "signature": signature,
+                        },
+                    )
+                    return
+
+                QTimer.singleShot(450, poll_delivery)
+
+            self._get_chat_media_signature(on_signature_result)
+
         # Step 1: 获取图片按钮的位置
         get_position_script = r"""
         (function() {
-            // 查找图片按钮 div[title="图片"]
             var imgDiv = document.querySelector('div[title="图片"]');
             if (imgDiv) {
                 var rect = imgDiv.getBoundingClientRect();
-                return JSON.stringify({ 
-                    found: true, 
+                return JSON.stringify({
+                    found: true,
                     x: rect.left + rect.width / 2,
                     y: rect.top + rect.height / 2,
                     method: 'div_title'
                 });
             }
-            
-            // 备选：查找 input#file1 的父元素
+
             var fileInput = document.getElementById('file1');
             if (fileInput && fileInput.parentElement) {
-                var rect = fileInput.parentElement.getBoundingClientRect();
-                return JSON.stringify({ 
-                    found: true, 
-                    x: rect.left + rect.width / 2,
-                    y: rect.top + rect.height / 2,
+                var rect2 = fileInput.parentElement.getBoundingClientRect();
+                return JSON.stringify({
+                    found: true,
+                    x: rect2.left + rect2.width / 2,
+                    y: rect2.top + rect2.height / 2,
                     method: 'file1_parent'
                 });
             }
-            
+
             return JSON.stringify({ found: false, error: '未找到图片按钮' });
         })()
         """
 
         def on_position_result(success, result):
-            if not success:
-                if callback:
-                    callback(False, {"error": "获取按钮位置失败", "detail": str(result)})
-                return
-            
-            # 解析结果
-            pos_data = result if isinstance(result, dict) else {}
-            if isinstance(result, str):
-                try:
-                    import json as json_mod
-                    pos_data = json_mod.loads(result)
-                except:
-                    pass
-            
+            pos_data = self._parse_js_payload(result) if success else {}
             if not pos_data.get("found"):
-                if callback:
-                    callback(False, {"error": pos_data.get("error", "未找到图片按钮"), "step": 1})
+                finish(
+                    False,
+                    {
+                        "error": pos_data.get("error", "获取按钮位置失败"),
+                        "step": "locate_image_button",
+                    },
+                )
                 return
-            
-            # 获取按钮中心坐标
+
             x = pos_data.get("x", 0)
             y = pos_data.get("y", 0)
-            trigger_method = pos_data.get("method", "unknown")
-            
-            # Step 2: 使用 Qt 原生鼠标点击
-            def do_native_click():
-                try:
-                    # 获取 focusProxy（实际接收事件的 widget）
-                    target_widget = self.web_view.focusProxy()
-                    if not target_widget:
-                        target_widget = self.web_view
-                    
-                    # 转换坐标到 widget 坐标系
-                    local_pos = QPointF(x, y)
-                    global_pos = target_widget.mapToGlobal(local_pos.toPoint())
-                    global_pos_f = QPointF(global_pos.x(), global_pos.y())
-                    
-                    # 鼠标按下事件
-                    press_event = QMouseEvent(
-                        QMouseEvent.MouseButtonPress,
-                        local_pos,
-                        global_pos_f,
-                        Qt.LeftButton,
-                        Qt.LeftButton,
-                        Qt.NoModifier
+            state["trigger_method"] = pos_data.get("method", "unknown")
+
+            clicked, click_err = self._native_left_click(x, y)
+            if not clicked:
+                finish(
+                    False,
+                    {
+                        "error": f"点击图片按钮失败: {click_err}",
+                        "step": "native_click_image_button",
+                        "triggerMethod": state["trigger_method"],
+                    },
+                )
+                return
+
+            # 让文件选择与弹层渲染完成后再确认发送（此前 1000ms 容易错过确认窗口）。
+            def confirm_with_enter():
+                state["enter_attempt"] += 1
+                entered, enter_err = self._native_press_enter()
+                if not entered:
+                    state["enter_error"] = enter_err
+
+                def on_dialog_state(checked_success, checked_result):
+                    dialog_state = self._parse_js_payload(checked_result) if checked_success else {}
+                    dialog_visible = bool(dialog_state.get("dialog_visible", False))
+                    send_btn_visible = bool(dialog_state.get("send_button_in_dialog_visible", False))
+
+                    if not dialog_visible:
+                        state["dialog_closed"] = True
+                        QTimer.singleShot(300, poll_delivery)
+                        return
+
+                    # Enter 后弹窗仍未关闭：继续重试，不直接当成功。
+                    if state["enter_attempt"] < max_enter_attempts:
+                        QTimer.singleShot(220, confirm_with_enter)
+                        return
+
+                    if not send_btn_visible:
+                        # 弹窗还在但按钮未就绪，进入轮询等待，不当成功。
+                        QTimer.singleShot(320, poll_delivery)
+                        return
+
+                    # Enter 多次后仍在弹窗，改为精准点击弹窗内“发送*”按钮。
+                    state["confirm_clicked"] = True
+                    clicked_confirm, confirm_err = self._native_left_click(
+                        dialog_state.get("send_button_x", 0),
+                        dialog_state.get("send_button_y", 0),
                     )
-                    QCoreApplication.sendEvent(target_widget, press_event)
-                    
-                    # 鼠标释放事件
-                    release_event = QMouseEvent(
-                        QMouseEvent.MouseButtonRelease,
-                        local_pos,
-                        global_pos_f,
-                        Qt.LeftButton,
-                        Qt.NoButton,
-                        Qt.NoModifier
-                    )
-                    QCoreApplication.sendEvent(target_widget, release_event)
-                    
-                except Exception as e:
-                    if callback:
-                        callback(False, {"error": f"Qt鼠标点击失败: {str(e)}", "step": 2})
-                    return
-                
-                # Step 3: 等待弹窗出现后发送 Enter 键
-                def send_enter_key():
-                    try:
-                        # 确保 web_view 获得焦点
-                        self.web_view.setFocus()
-                        target_widget = self.web_view.focusProxy()
-                        if not target_widget:
-                            target_widget = self.web_view
-                        
-                        # 创建 Enter 键按下事件
-                        key_press = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Return, Qt.NoModifier)
-                        QCoreApplication.sendEvent(target_widget, key_press)
-                        
-                        # 创建 Enter 键释放事件
-                        key_release = QKeyEvent(QKeyEvent.KeyRelease, Qt.Key_Return, Qt.NoModifier)
-                        QCoreApplication.sendEvent(target_widget, key_release)
-                        
-                        if callback:
-                            callback(True, {
-                                "success": True,
-                                "step": 3,
-                                "triggerMethod": trigger_method,
-                                "sendMethod": "qt_native_enter_key"
-                            })
-                    except Exception as e:
-                        if callback:
-                            callback(False, {
-                                "error": f"发送 Enter 键失败: {str(e)}",
-                                "step": 3,
-                                "triggerMethod": trigger_method
-                            })
-                
-                # 等待1000ms让弹窗完全渲染（第一次发送图片弹窗加载较慢）
-                QTimer.singleShot(1000, send_enter_key)
-            
-            # 稍微延迟执行点击，确保页面稳定
-            QTimer.singleShot(100, do_native_click)
-        
-        self.run_javascript(get_position_script, on_position_result)
+                    if not clicked_confirm:
+                        finish(
+                            False,
+                            {
+                                "error": f"弹窗内发送按钮点击失败: {confirm_err}",
+                                "step": "confirm_click_after_enter",
+                                "triggerMethod": state["trigger_method"],
+                            },
+                        )
+                        return
+
+                    QTimer.singleShot(320, poll_delivery)
+
+                QTimer.singleShot(280, lambda: self._get_media_dialog_state(on_dialog_state))
+
+            QTimer.singleShot(500, confirm_with_enter)
+
+        def on_baseline_signature(success, result):
+            baseline = self._parse_js_payload(result) if success else {}
+            state["baseline"] = baseline if baseline.get("found") else {}
+            self.run_javascript(get_position_script, on_position_result)
+
+        self._get_chat_media_signature(on_baseline_signature)
 
     def get_page_url(self) -> str:
         """获取当前页面URL"""

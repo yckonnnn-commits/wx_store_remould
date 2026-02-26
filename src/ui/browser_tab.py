@@ -3,20 +3,22 @@
 包含QWebEngineView浏览器控件
 """
 
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QProgressBar, QFrame, QLabel
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
-from PySide6.QtCore import QUrl, Qt, Signal
+from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage, QWebEngineProfile
+from PySide6.QtCore import QUrl, Qt, Signal, QStandardPaths
 
 
 class CustomWebEnginePage(QWebEnginePage):
     """支持预设文件上传的 WebEnginePage"""
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self, profile: QWebEngineProfile, parent=None):
+        super().__init__(profile, parent)
         self.next_file_selection = []
 
     def chooseFiles(self, mode, old_files, accepted_mime_types):
@@ -36,7 +38,24 @@ class BrowserTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.web_profile = None
         self._setup_ui()
+
+    def _create_persistent_profile(self) -> QWebEngineProfile:
+        """创建持久化 WebEngine Profile，避免重启后重复登录。"""
+        app_data_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+        if not app_data_dir:
+            app_data_dir = str(Path.home() / ".annel_ai_customer_service")
+
+        profile_root = Path(app_data_dir) / "webengine" / "wx_store_profile"
+        profile_root.mkdir(parents=True, exist_ok=True)
+
+        profile = QWebEngineProfile("wx_store_profile", self)
+        profile.setPersistentStoragePath(str(profile_root))
+        profile.setCachePath(str(profile_root))
+        profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
+        profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
+        return profile
 
     def _setup_ui(self):
         """设置UI"""
@@ -127,7 +146,8 @@ class BrowserTab(QWidget):
         view_layout.setContentsMargins(0, 0, 0, 0)
         
         self.web_view = QWebEngineView()
-        self.web_view.setPage(CustomWebEnginePage(self.web_view))
+        self.web_profile = self._create_persistent_profile()
+        self.web_view.setPage(CustomWebEnginePage(self.web_profile, self.web_view))
         
         settings = self.web_view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)

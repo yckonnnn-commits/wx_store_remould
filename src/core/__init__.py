@@ -3,7 +3,7 @@
 """
 
 from .message_processor import MessageProcessor
-from .reply_coordinator import ReplyCoordinator
+from .private_cs_agent import CustomerServiceAgent, AgentDecision
 from .session_manager import SessionManager
 
-__all__ = ['MessageProcessor', 'ReplyCoordinator', 'SessionManager']
+__all__ = ['MessageProcessor', 'CustomerServiceAgent', 'AgentDecision', 'SessionManager']
