@@ -17,7 +17,7 @@ class MemoryStore:
     def __init__(self, file_path: Path):
         self.file_path = file_path
         self._data: Dict[str, Any] = {
-            "version": 2,
+            "version": 3,
             "updated_at": "",
             "sessions": {},
             "users": {},
@@ -38,7 +38,7 @@ class MemoryStore:
             return True
         except Exception:
             self._data = {
-                "version": 2,
+                "version": 3,
                 "updated_at": "",
                 "sessions": {},
                 "users": {},
@@ -63,17 +63,23 @@ class MemoryStore:
         return {
             "session_id": session_id,
             "user_hash": user_hash,
+            "session_fingerprint": "",
             "first_seen_at": now,
             "updated_at": now,
             "address_prompt_count": 0,
             "sent_address_stores": [],
             "address_image_sent_count": 0,
+            "address_image_last_sent_at_by_store": {},
             "contact_image_sent_count": 0,
+            "contact_image_last_sent_at": "",
             "contact_warmup": False,
             "geo_followup_round": 0,
             "geo_choice_offered": False,
             "last_geo_pending": False,
             "last_detected_region": "",
+            "last_target_store": "",
+            "last_geo_route_reason": "unknown",
+            "last_geo_updated_at": "",
             "last_route_reason": "unknown",
             "last_intent": "general",
             "last_reply_goal": "解答",
@@ -100,6 +106,14 @@ class MemoryStore:
         if user_hash and not state.get("user_hash"):
             state["user_hash"] = user_hash
             state["updated_at"] = datetime.now().isoformat()
+        return state
+
+    def get_existing_session_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        sessions = self._data.setdefault("sessions", {})
+        state = sessions.get(session_id)
+        if not isinstance(state, dict):
+            return None
+        self._fill_session_defaults(state, session_id=session_id, user_hash=state.get("user_hash", ""))
         return state
 
     def update_session_state(self, session_id: str, updates: Dict[str, Any], user_hash: str = "") -> Dict[str, Any]:
@@ -151,7 +165,7 @@ class MemoryStore:
             return None
 
     def _ensure_schema(self) -> None:
-        self._data["version"] = max(int(self._data.get("version", 1) or 1), 2)
+        self._data["version"] = max(int(self._data.get("version", 1) or 1), 3)
         sessions = self._data.setdefault("sessions", {})
         users = self._data.setdefault("users", {})
         for session_id, state in list(sessions.items()):
@@ -172,20 +186,30 @@ class MemoryStore:
             state.setdefault("user_hash", user_hash)
         else:
             state.setdefault("user_hash", "")
+        state.setdefault("session_fingerprint", "")
         state.setdefault("first_seen_at", now)
         state.setdefault("updated_at", now)
         state.setdefault("address_prompt_count", 0)
         state.setdefault("sent_address_stores", [])
         state.setdefault("address_image_sent_count", 0)
+        state.setdefault("address_image_last_sent_at_by_store", {})
         state.setdefault("contact_image_sent_count", 0)
+        state.setdefault("contact_image_last_sent_at", "")
         state.setdefault("contact_warmup", False)
         state.setdefault("geo_followup_round", 0)
         state.setdefault("geo_choice_offered", False)
         state.setdefault("last_geo_pending", False)
         state.setdefault("last_detected_region", "")
+        state.setdefault("last_target_store", "")
+        state.setdefault("last_geo_route_reason", "unknown")
+        state.setdefault("last_geo_updated_at", "")
         state.setdefault("last_route_reason", "unknown")
         state.setdefault("last_intent", "general")
         state.setdefault("last_reply_goal", "解答")
+        if not isinstance(state.get("sent_address_stores"), list):
+            state["sent_address_stores"] = []
+        if not isinstance(state.get("address_image_last_sent_at_by_store"), dict):
+            state["address_image_last_sent_at_by_store"] = {}
 
     def _fill_user_defaults(self, state: Dict[str, Any], user_hash: str) -> None:
         now = datetime.now().isoformat()

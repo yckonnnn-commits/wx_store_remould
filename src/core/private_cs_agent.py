@@ -9,6 +9,7 @@ import hashlib
 import json
 import random
 import re
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -63,6 +64,8 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "store_recommend": "姐姐，推荐您去{store_name}，我给您发一张位置图，您跟着图走会更直观～🌹",
     "non_coverage_contact": "姐姐，{region}暂时没有我们的门店，目前假发是需要根据头围和脸型进行私人定制的，您可以看看下面图中画圈圈的地方，会有专门的老师跟您远程鉴定～💗",
     "contact_intro": "姐姐我给您发一张联系方式图，您按图添加后我这边一对一继续跟进您呀😊",
+    "purchase_contact_intro": "姐姐可以看看图中画框框的地方，会有专门的老师给您介绍～❤️",
+    "purchase_contact_remind_only": "姐姐，请注意一下上面图中的圈圈位置哦，可以详细给您介绍怎么买～💗",
     "contact_followup_1": "姐姐您看下我刚发的联系方式图，按图添加后跟我说一声，我马上接着帮您安排😊",
     "contact_followup_2": "姐姐刚刚那张联系方式图您点开就能看到，添加后回我一句，我立刻继续帮您跟进😊",
     "llm_fallback": "姐姐抱歉，系统现在有点忙，您稍后再发我马上跟进您哦🌹",
@@ -73,6 +76,8 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
         "姐姐明白，我先把关键点给您讲清楚呀🌹",
     ],
 }
+
+ADDRESS_IMAGE_COOLDOWN_HOURS = 24
 
 
 @dataclass
@@ -88,6 +93,8 @@ class AgentDecision:
     rule_applied: bool = False
     llm_model: str = ""
     llm_fallback_reason: str = ""
+    geo_context_source: str = ""
+    media_skip_reason: str = ""
 
 
 class _SafeDict(dict):
@@ -268,7 +275,7 @@ class CustomerServiceAgent:
                 user_state=user_state,
             )
 
-        decision.media_items = self._plan_media_items(
+        media_items, media_skip_reason = self._plan_media_items(
             session_id=session_id,
             text=text,
             intent=decision.intent,
@@ -278,16 +285,24 @@ class CustomerServiceAgent:
             session_state=session_state,
             user_state=user_state,
         )
+        decision.media_items = media_items
+        decision.media_skip_reason = media_skip_reason
         if not decision.media_items:
             decision.media_plan = "none"
 
+        now = datetime.now().isoformat()
+        target_store = route.get("target_store", "unknown")
+        detected_region = route.get("detected_region", "") or ""
         self.memory_store.update_session_state(
             session_id,
             {
                 "last_route_reason": decision.route_reason,
                 "last_intent": decision.intent,
                 "last_reply_goal": decision.reply_goal,
-                "last_detected_region": route.get("detected_region", "") or session_state.get("last_detected_region", ""),
+                "last_detected_region": detected_region or session_state.get("last_detected_region", ""),
+                "last_target_store": target_store if target_store != "unknown" else session_state.get("last_target_store", ""),
+                "last_geo_route_reason": route.get("reason", "unknown") if (target_store != "unknown" or detected_region) else session_state.get("last_geo_route_reason", "unknown"),
+                "last_geo_updated_at": now if (target_store != "unknown" or detected_region) else session_state.get("last_geo_updated_at", ""),
             },
             user_hash=user_hash,
         )
@@ -333,6 +348,7 @@ class CustomerServiceAgent:
         user_hash = self._hash_user(user_name or session_id)
         session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
         user_state = self.memory_store.get_user_state(user_hash)
+        now = datetime.now().isoformat()
 
         media_type = media_item.get("type", "")
 
@@ -343,11 +359,18 @@ class CustomerServiceAgent:
             target_store = media_item.get("target_store", "")
             if target_store:
                 stores.add(target_store)
+                sent_map = session_state.get("address_image_last_sent_at_by_store", {}) or {}
+                if not isinstance(sent_map, dict):
+                    sent_map = {}
+                sent_map[target_store] = now
+                session_state["address_image_last_sent_at_by_store"] = sent_map
+                session_state["last_target_store"] = target_store
             session_state["sent_address_stores"] = list(stores)
 
         elif media_type == "contact_image":
             sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
             session_state["contact_image_sent_count"] = sent_count + 1
+            session_state["contact_image_last_sent_at"] = now
             session_state["contact_warmup"] = False
             session_state["last_geo_pending"] = False
 
@@ -422,6 +445,57 @@ class CustomerServiceAgent:
         )
         return any(token in normalized for token in geo_tokens)
 
+    def _resolve_geo_context(self, route: Dict[str, Any], session_state: Dict[str, Any]) -> Dict[str, Any]:
+        target_store = route.get("target_store", "unknown")
+        detected_region = route.get("detected_region", "") or ""
+        if target_store and target_store != "unknown":
+            return {
+                "known": True,
+                "source": "route_target_store",
+                "target_store": target_store,
+                "region": detected_region,
+            }
+        if detected_region:
+            return {
+                "known": True,
+                "source": "route_detected_region",
+                "target_store": session_state.get("last_target_store", ""),
+                "region": detected_region,
+            }
+
+        last_target_store = session_state.get("last_target_store", "")
+        if last_target_store and last_target_store != "unknown":
+            return {
+                "known": True,
+                "source": "session_last_target_store",
+                "target_store": last_target_store,
+                "region": session_state.get("last_detected_region", ""),
+            }
+
+        last_region = session_state.get("last_detected_region", "")
+        if last_region:
+            return {
+                "known": True,
+                "source": "session_last_detected_region",
+                "target_store": "",
+                "region": last_region,
+            }
+
+        if int(session_state.get("address_image_sent_count", 0) or 0) > 0:
+            return {
+                "known": True,
+                "source": "session_address_image_history",
+                "target_store": "",
+                "region": "",
+            }
+
+        return {
+            "known": False,
+            "source": "",
+            "target_store": "",
+            "region": "",
+        }
+
     def _decide_rule_reply(
         self,
         text: str,
@@ -431,23 +505,7 @@ class CustomerServiceAgent:
     ) -> AgentDecision:
         reason = route.get("reason", "unknown")
         target_store = route.get("target_store", "unknown")
-
-        if target_store != "unknown":
-            store = self.knowledge_service.get_store_display(target_store)
-            store_name = store.get("store_name", "门店")
-            session_state["last_geo_pending"] = False
-            session_state["geo_followup_round"] = 0
-            session_state["geo_choice_offered"] = False
-            return AgentDecision(
-                reply_text=self._render_template("store_recommend", store_name=store_name),
-                intent="address",
-                route_reason=reason,
-                reply_goal="解答",
-                media_plan="address_image",
-                reply_source="rule",
-                rule_id="ADDR_STORE_RECOMMEND",
-                rule_applied=True,
-            )
+        geo_context = self._resolve_geo_context(route, session_state)
 
         if reason == "shanghai_need_district":
             return self._build_geo_followup_decision(session_state=session_state, route_reason="need_district", intent="address")
@@ -466,6 +524,55 @@ class CustomerServiceAgent:
                 reply_source="rule",
                 rule_id="ADDR_OUT_OF_COVERAGE",
                 rule_applied=True,
+                geo_context_source=geo_context.get("source", ""),
+            )
+
+        if intent == "purchase" and reason != "shanghai_need_district" and geo_context.get("known"):
+            contact_sent = self._is_contact_image_sent_for_current_geo(session_state)
+            session_state["last_geo_pending"] = False
+            session_state["geo_followup_round"] = 0
+            session_state["geo_choice_offered"] = False
+            if contact_sent:
+                return AgentDecision(
+                    reply_text=self._render_template("purchase_contact_remind_only"),
+                    intent="purchase",
+                    route_reason=reason if reason != "unknown" else "known_geo_context",
+                    reply_goal="推进购买意图",
+                    media_plan="none",
+                    reply_source="rule",
+                    rule_id="PURCHASE_CONTACT_REMIND_ONLY",
+                    rule_applied=True,
+                    geo_context_source=geo_context.get("source", ""),
+                )
+
+            return AgentDecision(
+                reply_text=self._render_template("purchase_contact_intro"),
+                intent="purchase",
+                route_reason=reason if reason != "unknown" else "known_geo_context",
+                reply_goal="推进购买意图",
+                media_plan="contact_image",
+                reply_source="rule",
+                rule_id="PURCHASE_CONTACT_FROM_KNOWN_GEO",
+                rule_applied=True,
+                geo_context_source=geo_context.get("source", ""),
+            )
+
+        if target_store != "unknown":
+            store = self.knowledge_service.get_store_display(target_store)
+            store_name = store.get("store_name", "门店")
+            session_state["last_geo_pending"] = False
+            session_state["geo_followup_round"] = 0
+            session_state["geo_choice_offered"] = False
+            return AgentDecision(
+                reply_text=self._render_template("store_recommend", store_name=store_name),
+                intent="address",
+                route_reason=reason,
+                reply_goal="解答",
+                media_plan="address_image",
+                reply_source="rule",
+                rule_id="ADDR_STORE_RECOMMEND",
+                rule_applied=True,
+                geo_context_source=geo_context.get("source", ""),
             )
 
         # address / purchase 未识别到地区：进入 2次追问 + 1次选择题
@@ -613,18 +720,27 @@ class CustomerServiceAgent:
         media_plan: str,
         session_state: Dict[str, Any],
         user_state: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], str]:
         items: List[Dict[str, Any]] = []
+        skip_reason = ""
         target_store = route.get("target_store", "unknown")
         reason = route_reason or route.get("reason", "unknown")
 
-        if media_plan == "address_image" and target_store != "unknown":
-            item = self._queue_address_image(session_id=session_id, session_state=session_state, target_store=target_store)
+        if media_plan == "address_image":
+            if target_store == "unknown":
+                skip_reason = "address_target_unknown"
+            item, reason_hint = self._queue_address_image(
+                session_id=session_id,
+                session_state=session_state,
+                target_store=target_store,
+            )
             if item:
                 items.append(item)
+            elif reason_hint:
+                skip_reason = reason_hint
 
         if media_plan == "contact_image" and not items:
-            item = self._queue_contact_image(
+            item, reason_hint = self._queue_contact_image(
                 session_id=session_id,
                 text=text,
                 intent=intent,
@@ -634,35 +750,57 @@ class CustomerServiceAgent:
             )
             if item:
                 items.append(item)
+            elif reason_hint and not skip_reason:
+                skip_reason = reason_hint
 
         # delayed_video 不即时发送，仍由发送回执推进。
         if media_plan == "delayed_video" and not user_state.get("video_sent"):
             user_state["video_armed"] = True
             user_state["post_contact_reply_count"] = 0
 
-        return items
+        return items, skip_reason
 
-    def _queue_address_image(self, session_id: str, session_state: Dict[str, Any], target_store: str) -> Optional[Dict[str, Any]]:
+    def _queue_address_image(
+        self,
+        session_id: str,
+        session_state: Dict[str, Any],
+        target_store: str,
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        if target_store == "unknown":
+            return None, "address_target_unknown"
+
         whitelist = self._is_media_whitelist_session(session_id)
 
         if not whitelist:
             sent_count = int(session_state.get("address_image_sent_count", 0) or 0)
             if sent_count >= 6:
-                return None
+                return None, "address_image_limit_reached"
 
-            sent_stores = set(session_state.get("sent_address_stores", []) or [])
-            if target_store in sent_stores:
-                return None
+            sent_map = session_state.get("address_image_last_sent_at_by_store", {}) or {}
+            if not isinstance(sent_map, dict):
+                sent_map = {}
+                session_state["address_image_last_sent_at_by_store"] = sent_map
+
+            last_sent_text = str(sent_map.get(target_store, "") or "").strip()
+            if last_sent_text:
+                last_sent = self._parse_iso(last_sent_text)
+                if last_sent:
+                    elapsed = datetime.now() - last_sent
+                    if elapsed < timedelta(hours=ADDRESS_IMAGE_COOLDOWN_HOURS):
+                        return None, "address_image_cooldown"
 
         image_path = self._pick_address_image(target_store)
         if not image_path:
-            return None
+            return None, "address_image_missing"
 
-        return {
-            "type": "address_image",
-            "path": image_path,
-            "target_store": target_store,
-        }
+        return (
+            {
+                "type": "address_image",
+                "path": image_path,
+                "target_store": target_store,
+            },
+            "",
+        )
 
     def _queue_contact_image(
         self,
@@ -672,23 +810,45 @@ class CustomerServiceAgent:
         reason: str,
         route: Dict[str, Any],
         session_state: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
         if not self._contact_images:
-            return None
+            return None, "contact_image_missing"
 
         whitelist = self._is_media_whitelist_session(session_id)
+        if not whitelist:
+            sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
+            if intent == "purchase":
+                if self._is_contact_image_sent_for_current_geo(session_state):
+                    return None, "contact_image_already_sent_for_geo"
+            elif sent_count >= 1:
+                return None, "contact_image_already_sent"
+
+        if reason == "out_of_coverage" or intent in ("contact", "purchase"):
+            return (
+                {
+                    "type": "contact_image",
+                    "path": random.choice(self._contact_images),
+                    "region": route.get("detected_region", "") or route_region(reason, text),
+                },
+                "",
+            )
+
+        return None, "contact_image_not_applicable"
+
+    def _is_contact_image_sent_for_current_geo(self, session_state: Dict[str, Any]) -> bool:
         sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
-        if not whitelist and sent_count >= 1:
-            return None
+        if sent_count <= 0:
+            return False
 
-        if reason == "out_of_coverage" or intent == "contact":
-            return {
-                "type": "contact_image",
-                "path": random.choice(self._contact_images),
-                "region": route.get("detected_region", "") or route_region(reason, text),
-            }
+        contact_sent_at = self._parse_iso(str(session_state.get("contact_image_last_sent_at", "") or "").strip())
+        geo_updated_at = self._parse_iso(str(session_state.get("last_geo_updated_at", "") or "").strip())
 
-        return None
+        if contact_sent_at and geo_updated_at:
+            return contact_sent_at >= geo_updated_at
+        if contact_sent_at and not geo_updated_at:
+            return True
+        # 兼容旧数据：只有计数没有时间戳时，不阻塞当前地理上下文首次发送
+        return False
 
     def _pick_address_image(self, target_store: str) -> Optional[str]:
         pool = self._address_index.get(target_store, [])
@@ -792,6 +952,14 @@ class CustomerServiceAgent:
 
     def _hash_user(self, text: str) -> str:
         return hashlib.md5((text or "unknown").encode("utf-8", errors="ignore")).hexdigest()[:10]
+
+    def _parse_iso(self, value: str) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except Exception:
+            return None
 
     def _read_text(self, path: Path) -> str:
         if not path.exists():

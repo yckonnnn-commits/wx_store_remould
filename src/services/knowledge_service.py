@@ -94,6 +94,10 @@ class KnowledgeService(QObject):
         "在哪里买",
         "怎么下单",
         "怎么订",
+        "怎么预约",
+        "预约",
+        "到店",
+        "试戴",
     )
     PRICE_KEYWORDS = ("价格", "多少钱", "价位", "报价", "收费", "预算", "贵", "便宜")
     WEARING_KEYWORDS = (

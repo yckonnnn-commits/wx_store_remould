@@ -940,6 +940,58 @@ class BrowserService(QObject):
                 return "";
             }
 
+            function buildSessionFingerprint(node, userName) {
+                if (!node) {
+                    var fallbackName = String(userName || '').trim();
+                    return fallbackName ? ("name:" + fallbackName) : "";
+                }
+
+                var parts = [];
+                function pushPart(prefix, value) {
+                    if (value === undefined || value === null) return;
+                    var text = String(value).trim();
+                    if (!text) return;
+                    parts.push(prefix + text);
+                }
+
+                var attrs = [
+                    "data-session-id",
+                    "data-chat-id",
+                    "data-id",
+                    "id",
+                    "aria-label",
+                    "title"
+                ];
+                for (var i = 0; i < attrs.length; i++) {
+                    var attrName = attrs[i];
+                    try {
+                        pushPart(attrName + "=", node.getAttribute && node.getAttribute(attrName));
+                    } catch (e) {}
+                }
+
+                var classTokens = String(node.className || "")
+                    .split(/\s+/)
+                    .filter(function(token) {
+                        if (!token) return false;
+                        return ["active", "current", "selected", "unread"].indexOf(String(token).toLowerCase()) === -1;
+                    })
+                    .sort();
+                if (classTokens.length) {
+                    pushPart("class=", classTokens.join(","));
+                }
+
+                var parent = node.parentElement;
+                if (parent) {
+                    pushPart("parent_id=", parent.id || "");
+                    pushPart("parent_data_id=", parent.getAttribute && parent.getAttribute("data-id"));
+                }
+
+                pushPart("node_tag=", node.tagName || "");
+                pushPart("name=", userName || "");
+
+                return parts.join("|").slice(0, 320);
+            }
+
             function findActiveSessionNode() {
                 var selectors = [
                     'li[role="listitem"]',
@@ -985,14 +1037,26 @@ class BrowserService(QObject):
                 var active = findActiveSessionNode();
                 var key = getSessionKeyFromNode(active);
                 if (key) {
-                    return { key: key, method: 'active_node' };
+                    return {
+                        key: key,
+                        method: 'active_node',
+                        fingerprint: buildSessionFingerprint(active, userName)
+                    };
                 }
                 var byName = findSessionByUserName(userName);
                 key = getSessionKeyFromNode(byName);
                 if (key) {
-                    return { key: key, method: 'name_match' };
+                    return {
+                        key: key,
+                        method: 'name_match',
+                        fingerprint: buildSessionFingerprint(byName, userName)
+                    };
                 }
-                return { key: "", method: "fallback" };
+                return {
+                    key: "",
+                    method: "fallback",
+                    fingerprint: buildSessionFingerprint(active || byName, userName)
+                };
             }
 
             function getChatMessages() {
@@ -1068,6 +1132,7 @@ class BrowserService(QObject):
                 user_method: userResult.method,
                 chat_session_key: sessionResult.key,
                 chat_session_method: sessionResult.method,
+                chat_session_fingerprint: sessionResult.fingerprint,
                 messages: msgResult.messages,
                 user_messages: msgResult.userMessages,
                 kf_messages: msgResult.kfMessages,

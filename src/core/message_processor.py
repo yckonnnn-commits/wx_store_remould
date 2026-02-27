@@ -153,6 +153,8 @@ class MessageProcessor(QObject):
         messages = data.get("messages", []) or []
         user_name = (data.get("user_name") or "未知用户").strip() or "未知用户"
         chat_session_key = (data.get("chat_session_key") or "").strip()
+        chat_session_method = (data.get("chat_session_method") or "").strip()
+        chat_session_fingerprint = (data.get("chat_session_fingerprint") or "").strip()
 
         if not messages:
             self.log_message.emit(f"⚠️ 用户 {user_name} 暂无可读消息")
@@ -179,8 +181,18 @@ class MessageProcessor(QObject):
         self._last_processed_marker = marker
         self.message_received.emit({"user_name": user_name, "text": latest_user_message})
 
-        session_id = self._build_session_id(user_name=user_name, chat_session_key=chat_session_key)
+        session_id = self._build_session_id(
+            user_name=user_name,
+            chat_session_key=chat_session_key,
+            chat_session_fingerprint=chat_session_fingerprint,
+        )
         user_hash = self._build_user_hash(user_name=user_name, session_id=session_id)
+        if chat_session_fingerprint:
+            self.agent.memory_store.update_session_state(
+                session_id=session_id,
+                updates={"session_fingerprint": chat_session_fingerprint},
+                user_hash=user_hash,
+            )
         self.sessions.get_or_create_session(session_id=session_id, user_name=user_name)
         self.sessions.add_message(session_id, latest_user_message, is_user=True, user_name=user_name)
         self._append_training_event(
@@ -191,6 +203,8 @@ class MessageProcessor(QObject):
                 "text": latest_user_message,
                 "user_name": user_name,
                 "chat_session_key": chat_session_key,
+                "chat_session_method": chat_session_method,
+                "chat_session_fingerprint": chat_session_fingerprint,
             },
         )
 
@@ -235,6 +249,8 @@ class MessageProcessor(QObject):
                 "media_plan": decision.media_plan,
                 "reply_text": decision.reply_text,
                 "rule_applied": decision.rule_applied,
+                "geo_context_source": decision.geo_context_source,
+                "media_skip_reason": decision.media_skip_reason,
             },
         )
 
@@ -400,11 +416,21 @@ class MessageProcessor(QObject):
     def _hash_id(self, text: str) -> str:
         return hashlib.md5((text or "").encode("utf-8", errors="ignore")).hexdigest()[:10]
 
-    def _build_session_id(self, user_name: str, chat_session_key: str) -> str:
+    def _build_session_id(self, user_name: str, chat_session_key: str, chat_session_fingerprint: str = "") -> str:
         key = (chat_session_key or "").strip()
         if key:
             return f"chat_{self._hash_id(key)}"
-        return f"user_{self._hash_id(user_name)}"
+        user_key = f"user_{self._hash_id(user_name)}"
+        fingerprint = (chat_session_fingerprint or "").strip()
+        if not fingerprint:
+            return user_key
+
+        existing = self.agent.memory_store.get_existing_session_state(user_key)
+        existing_fp = (existing or {}).get("session_fingerprint", "") if isinstance(existing, dict) else ""
+        if not existing_fp or existing_fp == fingerprint:
+            return user_key
+
+        return f"{user_key}_{self._hash_id(fingerprint)[:6]}"
 
     def _build_user_hash(self, user_name: str, session_id: str) -> str:
         base = (user_name or "").strip() or session_id

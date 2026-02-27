@@ -181,7 +181,82 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertIsNone(agent.mark_reply_sent("chat_b", user_name, "再问一个问题"))
             self.assertIsNone(agent.mark_reply_sent("chat_b", user_name, "再追问一次"))
 
+    def test_purchase_known_geo_contact_then_remind(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+            session_id = "chat_geo"
+            user_name = "用户E"
+
+            d0 = agent.decide(session_id, user_name, "我在长宁", [])
+            self.assertEqual(d0.rule_id, "ADDR_STORE_RECOMMEND")
+
+            d1 = agent.decide(session_id, user_name, "怎么买啊", [])
+            self.assertEqual(d1.rule_id, "PURCHASE_CONTACT_FROM_KNOWN_GEO")
+            self.assertEqual(d1.media_plan, "contact_image")
+            self.assertTrue(d1.media_items)
+            agent.mark_media_sent(session_id, user_name, d1.media_items[0], success=True)
+
+            d2 = agent.decide(session_id, user_name, "怎么预约", [])
+            self.assertEqual(d2.rule_id, "PURCHASE_CONTACT_REMIND_ONLY")
+            self.assertEqual(d2.media_plan, "none")
+            self.assertFalse(d2.media_items)
+
+    def test_purchase_known_geo_not_blocked_by_legacy_contact_count(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+            session_id = "chat_geo_legacy"
+            user_name = "用户G"
+
+            user_hash = agent._hash_user(user_name)
+            agent.memory_store.update_session_state(
+                session_id,
+                {
+                    "contact_image_sent_count": 1,
+                    "contact_image_last_sent_at": "",
+                },
+                user_hash=user_hash,
+            )
+
+            d0 = agent.decide(session_id, user_name, "我在长宁", [])
+            self.assertEqual(d0.rule_id, "ADDR_STORE_RECOMMEND")
+
+            d1 = agent.decide(session_id, user_name, "需要预约吗？", [])
+            self.assertEqual(d1.rule_id, "PURCHASE_CONTACT_FROM_KNOWN_GEO")
+            self.assertEqual(d1.media_plan, "contact_image")
+            self.assertTrue(d1.media_items)
+
+    def test_address_image_cooldown_24h(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+            session_id = "chat_addr"
+            user_name = "用户F"
+
+            d1 = agent.decide(session_id, user_name, "我在门头沟", [])
+            self.assertEqual(d1.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d1.media_plan, "address_image")
+            self.assertTrue(d1.media_items)
+            agent.mark_media_sent(session_id, user_name, d1.media_items[0], success=True)
+
+            d2 = agent.decide(session_id, user_name, "我在门头沟", [])
+            self.assertEqual(d2.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d2.media_plan, "none")
+            self.assertEqual(d2.media_skip_reason, "address_image_cooldown")
+            self.assertFalse(d2.media_items)
+
+            user_hash = agent._hash_user(user_name)
+            state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+            sent_map = dict(state.get("address_image_last_sent_at_by_store", {}) or {})
+            sent_map["beijing_chaoyang"] = "2020-01-01T00:00:00"
+            agent.memory_store.update_session_state(
+                session_id,
+                {"address_image_last_sent_at_by_store": sent_map},
+                user_hash=user_hash,
+            )
+
+            d3 = agent.decide(session_id, user_name, "我在门头沟", [])
+            self.assertEqual(d3.media_plan, "address_image")
+            self.assertTrue(d3.media_items)
+
 
 if __name__ == "__main__":
     unittest.main()
-
