@@ -527,7 +527,18 @@ class BrowserService(QObject):
             if base_media >= 0 and curr_media > base_media:
                 return True
         except Exception:
-            return False
+            pass
+
+        # 弱确认：部分页面媒体节点类名会变化，kf_media_count 可能不涨；
+        # 若客服消息总数增长且最后一条客服消息非文本，通常就是图片已送达。
+        try:
+            base_total = int(baseline.get("kf_total_count", -1))
+            curr_total = int(current.get("kf_total_count", 0))
+            last_kf_has_text = bool(current.get("last_kf_has_text", True))
+            if base_total >= 0 and curr_total > base_total and not last_kf_has_text:
+                return True
+        except Exception:
+            pass
 
         return False
 

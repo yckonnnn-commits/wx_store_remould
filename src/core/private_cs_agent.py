@@ -51,6 +51,12 @@ CONTACT_COMPLIANCE_BLOCK_KEYWORDS = (
     "邮箱",
 )
 
+NEG_SHANGHAI_HINT_KEYWORDS = (
+    "不在上海",
+    "不是上海",
+    "不去上海",
+)
+
 
 DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "ask_region_r1": "姐姐，您在什么城市/区域呀？方便告诉我吗？我可以帮您针对性推荐门店，我们目前北京朝阳1家、上海5家（静安、人广、虹口、五角场、徐汇）🌹",
@@ -66,6 +72,7 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "contact_intro": "姐姐我给您发一张联系方式图，您按图添加后我这边一对一继续跟进您呀😊",
     "purchase_contact_intro": "姐姐可以看看图中画框框的地方，会有专门的老师给您介绍～❤️",
     "purchase_contact_remind_only": "姐姐，请注意一下上面图中的圈圈位置哦，可以详细给您介绍怎么买～💗",
+    "purchase_contact_remote_remind_only": "姐姐，您可以往上看看图中画圈的地方，我让老师一对一跟您远程定制❤️",
     "strong_intent_after_both_first": "姐姐，您可以看上面的画圈圈地方，我让老师跟您预约～💗",
     "contact_followup_1": "姐姐您看下我刚发的联系方式图，按图添加后跟我说一声，我马上接着帮您安排😊",
     "contact_followup_2": "姐姐刚刚那张联系方式图您点开就能看到，添加后回我一句，我立刻继续帮您跟进😊",
@@ -101,6 +108,10 @@ class AgentDecision:
     kb_match_question: str = ""
     kb_match_mode: str = ""
     kb_confident: bool = False
+    is_first_turn_global: bool = False
+    first_turn_media_guard_applied: bool = False
+    kb_repeat_rewritten: bool = False
+    video_trigger_user_count: int = 0
 
 
 class _SafeDict(dict):
@@ -197,6 +208,21 @@ class CustomerServiceAgent:
             if path.exists():
                 self._video_medias.append(str(path.resolve()))
 
+        # 视频素材兜底：配置文件名变更时按目录模糊匹配，再回退到任意视频文件。
+        if not self._video_medias and self.images_dir.exists():
+            all_files = [p for p in self.images_dir.iterdir() if p.is_file()]
+            preferred = [
+                p for p in all_files
+                if p.suffix.lower() in (".mp4", ".mov", ".m4v") and ("预约" in p.name or "视频" in p.name)
+            ]
+            if not preferred:
+                preferred = [p for p in all_files if p.suffix.lower() in (".mp4", ".mov", ".m4v")]
+            self._video_medias = [str(p.resolve()) for p in preferred if p.exists()]
+
+        if self._video_medias:
+            # 去重，保留顺序
+            self._video_medias = list(dict.fromkeys(self._video_medias))
+
         for raw_name in images_data.get("店铺地址", []):
             filename = Path(raw_name).name
             path = self.images_dir / filename
@@ -261,6 +287,7 @@ class CustomerServiceAgent:
         user_hash = self._hash_user(user_name or session_id)
         session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
         user_state = self.memory_store.get_user_state(user_hash)
+        is_first_turn_global = self.is_user_first_turn_global(user_id_hash=user_hash)
         self._sync_media_state_from_conversation_log(
             session_id=session_id,
             user_hash=user_hash,
@@ -279,6 +306,7 @@ class CustomerServiceAgent:
                 session_state=session_state,
                 conversation_history=conversation_history or [],
                 user_state=user_state,
+                is_first_turn_global=is_first_turn_global,
             )
         else:
             decision = self._decide_general_reply(
@@ -290,29 +318,53 @@ class CustomerServiceAgent:
                 user_state=user_state,
             )
 
-        if decision.reply_source in ("rule", "llm", "fallback"):
-            decision.reply_text = self._rewrite_if_repeated(
+        copy_lock_rule_ids = {
+            "PURCHASE_CONTACT_FROM_KNOWN_GEO",
+            "PURCHASE_REMOTE_CONTACT_IMAGE",
+            "PURCHASE_REMOTE_CONTACT_REMIND_ONLY",
+            "ADDR_OUT_OF_COVERAGE",
+            "ADDR_STORE_RECOMMEND",
+            "CONTACT_SEND_IMAGE",
+        }
+        should_rewrite = (
+            decision.reply_source in ("rule", "llm", "fallback", "knowledge")
+            and decision.rule_id not in copy_lock_rule_ids
+        )
+        if should_rewrite:
+            rewritten_text, rewritten = self._rewrite_if_repeated(
                 reply_text=decision.reply_text,
                 latest_user_text=text,
                 conversation_history=conversation_history or [],
                 user_state=user_state,
+                user_id_hash=user_hash,
             )
+            decision.reply_text = rewritten_text
+            decision.kb_repeat_rewritten = bool(rewritten and decision.reply_source == "knowledge")
 
+        decision.is_first_turn_global = bool(is_first_turn_global)
         both_images_sent = self._has_both_images_sent(session_state)
         decision.both_images_sent_state = both_images_sent
+        decision.video_trigger_user_count = int(session_state.get("session_user_message_count_after_contact", 0) or 0)
 
+        original_media_plan = decision.media_plan
         media_items, media_skip_reason = self._plan_media_items(
             session_id=session_id,
             text=text,
             intent=decision.intent,
             route=route,
             route_reason=decision.route_reason,
-            media_plan=decision.media_plan,
+            media_plan=original_media_plan,
             session_state=session_state,
             user_state=user_state,
+            is_first_turn_global=is_first_turn_global,
         )
         decision.media_items = media_items
         decision.media_skip_reason = media_skip_reason
+        decision.first_turn_media_guard_applied = bool(
+            is_first_turn_global
+            and original_media_plan in ("address_image", "contact_image")
+            and media_skip_reason == "first_turn_global_no_media"
+        )
         if not decision.media_items:
             decision.media_plan = "none"
 
@@ -350,8 +402,8 @@ class CustomerServiceAgent:
 
         session_video = self.summarize_session_video_from_log(session_id=session_id)
         if session_video.get("contact_sent") and not session_video.get("video_sent"):
-            replies_after_contact = int(session_video.get("assistant_reply_count_after_contact", 0) or 0)
-            if replies_after_contact + 1 >= 2:
+            user_messages_after_contact = int(session_video.get("user_message_count_after_contact", 0) or 0)
+            if user_messages_after_contact >= 2:
                 video_path = self._pick_video_media()
                 if video_path:
                     self.memory_store.update_user_state(user_hash, user_state)
@@ -521,14 +573,53 @@ class CustomerServiceAgent:
         session_state: Dict[str, Any],
         conversation_history: List[Dict[str, str]],
         user_state: Dict[str, Any],
+        is_first_turn_global: bool = False,
     ) -> AgentDecision:
         reason = route.get("reason", "unknown")
         target_store = route.get("target_store", "unknown")
         geo_context = self._resolve_geo_context(route, session_state)
         both_images_sent = self._has_both_images_sent(session_state)
+        neg_shanghai_hint = self._has_neg_shanghai_hint(text)
+
+        if is_first_turn_global and intent == "purchase" and reason in ("unknown", "need_region"):
+            return self._build_geo_followup_decision(session_state=session_state, route_reason="need_region", intent="purchase")
 
         if reason == "shanghai_need_district":
             return self._build_geo_followup_decision(session_state=session_state, route_reason="need_district", intent="address")
+
+        # “不在上海怎么买”优先走远程联系方式逻辑，避免被历史上海门店上下文误导。
+        if (
+            intent == "purchase"
+            and neg_shanghai_hint
+            and geo_context.get("known")
+            and not (reason == "out_of_coverage" and route.get("detected_region"))
+        ):
+            session_state["last_geo_pending"] = False
+            session_state["geo_followup_round"] = 0
+            session_state["geo_choice_offered"] = False
+            if self._is_contact_image_sent_for_current_geo(session_state):
+                return AgentDecision(
+                    reply_text=self._render_template("purchase_contact_remote_remind_only"),
+                    intent="purchase",
+                    route_reason="not_in_shanghai_remote",
+                    reply_goal="推进购买意图",
+                    media_plan="none",
+                    reply_source="rule",
+                    rule_id="PURCHASE_REMOTE_CONTACT_REMIND_ONLY",
+                    rule_applied=True,
+                    geo_context_source=geo_context.get("source", ""),
+                )
+            return AgentDecision(
+                reply_text=self._render_template("purchase_contact_intro"),
+                intent="purchase",
+                route_reason="not_in_shanghai_remote",
+                reply_goal="推进购买意图",
+                media_plan="contact_image",
+                reply_source="rule",
+                rule_id="PURCHASE_REMOTE_CONTACT_IMAGE",
+                rule_applied=True,
+                geo_context_source=geo_context.get("source", ""),
+            )
 
         if reason == "out_of_coverage":
             region = route.get("detected_region") or route_region(reason, text) or session_state.get("last_detected_region", "") or "您所在地区"
@@ -770,14 +861,18 @@ class CustomerServiceAgent:
         latest_user_text: str,
         conversation_history: List[Dict[str, str]],
         user_state: Dict[str, Any],
-    ) -> str:
+        user_id_hash: str = "",
+    ) -> Tuple[str, bool]:
         normalized = self._normalize_for_dedupe(reply_text)
         if not normalized:
-            return reply_text
+            return reply_text, False
 
-        previous = set(user_state.get("recent_reply_hashes", []) or [])
+        previous = self.summarize_recent_assistant_hashes_from_logs(user_id_hash=user_id_hash, limit=40)
+        memory_hashes = set(user_state.get("recent_reply_hashes", []) or [])
+        if memory_hashes:
+            previous |= memory_hashes
         if normalized not in previous:
-            return reply_text
+            return reply_text, False
 
         # 优先让 LLM 改写，最多 2 次；仍重复则走去重池兜底。
         rewrite_prompt = (
@@ -796,10 +891,11 @@ class CustomerServiceAgent:
                 continue
             candidate = self._normalize_reply_text(result)
             if self._normalize_for_dedupe(candidate) not in previous:
-                return candidate
+                return candidate, True
             rewrite_prompt = f"仍重复，请再次改写这句客服回复：{candidate}"
 
-        return self._avoid_repeat(user_state, reply_text)
+        fallback = self._avoid_repeat(user_state, reply_text)
+        return fallback, self._normalize_for_dedupe(fallback) != normalized
 
     def _plan_media_items(
         self,
@@ -811,12 +907,16 @@ class CustomerServiceAgent:
         media_plan: str,
         session_state: Dict[str, Any],
         user_state: Dict[str, Any],
+        is_first_turn_global: bool = False,
     ) -> Tuple[List[Dict[str, Any]], str]:
         items: List[Dict[str, Any]] = []
         skip_reason = ""
         target_store = route.get("target_store", "unknown")
         reason = route_reason or route.get("reason", "unknown")
         detected_region = route.get("detected_region", "") or ""
+
+        if is_first_turn_global and media_plan in ("address_image", "contact_image"):
+            return [], "first_turn_global_no_media"
 
         if media_plan == "address_image":
             if target_store == "unknown":
@@ -962,6 +1062,7 @@ class CustomerServiceAgent:
         session_state["session_video_armed"] = bool(session_video.get("contact_sent"))
         session_state["session_video_sent"] = bool(session_video.get("video_sent"))
         session_state["session_post_contact_reply_count"] = int(session_video.get("assistant_reply_count_after_contact", 0) or 0)
+        session_state["session_user_message_count_after_contact"] = int(session_video.get("user_message_count_after_contact", 0) or 0)
 
     def summarize_user_media_from_logs(self, user_id_hash: str) -> Dict[str, Any]:
         summary = {
@@ -1012,11 +1113,47 @@ class CustomerServiceAgent:
             summary["contact_image_last_sent_at"] = contact_last_ts.isoformat()
         return summary
 
+    def summarize_user_turns_from_logs(self, user_id_hash: str) -> Dict[str, int]:
+        summary = {
+            "user_message_count": 0,
+            "assistant_reply_count": 0,
+        }
+        if not user_id_hash:
+            return summary
+
+        for log_path in self.conversation_log_dir.glob("*.jsonl"):
+            try:
+                for raw_line in log_path.read_text(encoding="utf-8").splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    if str(record.get("user_id_hash", "") or "") != user_id_hash:
+                        continue
+                    event_type = str(record.get("event_type", "") or "")
+                    if event_type == "user_message":
+                        summary["user_message_count"] += 1
+                    elif event_type == "assistant_reply":
+                        summary["assistant_reply_count"] += 1
+            except Exception:
+                continue
+        return summary
+
+    def is_user_first_turn_global(self, user_id_hash: str) -> bool:
+        turns = self.summarize_user_turns_from_logs(user_id_hash=user_id_hash)
+        return int(turns.get("assistant_reply_count", 0) or 0) == 0
+
     def summarize_session_video_from_log(self, session_id: str) -> Dict[str, Any]:
         summary = {
             "contact_sent": False,
             "video_sent": False,
             "assistant_reply_count_after_contact": 0,
+            "user_message_count_after_contact": 0,
         }
         log_path = self._session_log_file(session_id)
         if not log_path.exists():
@@ -1043,8 +1180,8 @@ class CustomerServiceAgent:
             return summary
         summary["contact_sent"] = True
 
-        pending_user_round = False
         reply_count = 0
+        user_count = 0
         for idx in range(latest_contact_idx + 1, len(lines)):
             record = lines[idx]
             if not isinstance(record, dict):
@@ -1058,16 +1195,15 @@ class CustomerServiceAgent:
                 if str(payload.get("type", "") or "") == "delayed_video" and bool(payload.get("success")):
                     summary["video_sent"] = True
             elif event_type == "user_message":
-                pending_user_round = True
-            elif event_type == "assistant_reply" and pending_user_round:
+                user_count += 1
+            elif event_type == "assistant_reply":
                 sent_types = payload.get("round_media_sent_types", [])
                 if isinstance(sent_types, list) and "contact_image" in sent_types:
-                    pending_user_round = False
                     continue
                 reply_count += 1
-                pending_user_round = False
 
         summary["assistant_reply_count_after_contact"] = reply_count
+        summary["user_message_count_after_contact"] = user_count
         return summary
 
     def _scan_session_media_records(self, log_path: Path, user_id_hash: str) -> List[Dict[str, Any]]:
@@ -1176,6 +1312,43 @@ class CustomerServiceAgent:
             return None
         return random.choice(self._video_medias)
 
+    def summarize_recent_assistant_hashes_from_logs(self, user_id_hash: str, limit: int = 40) -> set[str]:
+        if not user_id_hash:
+            return set()
+        entries: List[Tuple[Optional[datetime], str]] = []
+        for log_path in sorted(self.conversation_log_dir.glob("*.jsonl")):
+            try:
+                for raw_line in log_path.read_text(encoding="utf-8").splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    if str(record.get("user_id_hash", "") or "") != user_id_hash:
+                        continue
+                    if str(record.get("event_type", "") or "") != "assistant_reply":
+                        continue
+                    payload = record.get("payload", {})
+                    if not isinstance(payload, dict):
+                        continue
+                    text = str(payload.get("text", "") or "").strip()
+                    if not text:
+                        continue
+                    norm = self._normalize_for_dedupe(text)
+                    if not norm:
+                        continue
+                    ts = self._parse_iso(str(record.get("timestamp", "") or ""))
+                    entries.append((ts, norm))
+            except Exception:
+                continue
+        entries.sort(key=lambda item: (item[0] is None, item[0] or datetime.min))
+        tail = entries[-max(1, int(limit or 1)) :]
+        return {norm for _, norm in tail}
+
     def _is_media_whitelist_session(self, session_id: str) -> bool:
         return session_id in self._media_whitelist_sessions
 
@@ -1260,6 +1433,12 @@ class CustomerServiceAgent:
         value = (text or "").strip().lower()
         value = re.sub(r"[^\w\u4e00-\u9fa5]", "", value)
         return value
+
+    def _has_neg_shanghai_hint(self, text: str) -> bool:
+        value = re.sub(r"\s+", "", (text or ""))
+        if not value:
+            return False
+        return any(keyword in value for keyword in NEG_SHANGHAI_HINT_KEYWORDS)
 
     def _hash_user(self, text: str) -> str:
         return hashlib.md5((text or "unknown").encode("utf-8", errors="ignore")).hexdigest()[:10]

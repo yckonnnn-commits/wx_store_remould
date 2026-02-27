@@ -62,6 +62,41 @@ class DummyBrowserFlow(QObject):
         callback(True, {"ok": True})
 
 
+class DummyBrowserFlowRetry(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.image_send_calls = 0
+
+    def find_and_click_first_unread(self, callback):
+        del callback
+
+    def grab_chat_data(self, callback):
+        del callback
+
+    def send_message(self, text, callback):
+        del text
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        del media_path
+        self.image_send_calls += 1
+        if self.image_send_calls == 1:
+            callback(
+                False,
+                {
+                    "error": "图片未检测到实际发送结果",
+                    "step": "verify_timeout",
+                    "confirmClicked": False,
+                    "sawPendingOrDialog": False,
+                },
+            )
+            return
+        callback(True, {"ok": True})
+
+
 class DummyAgentFlow:
     def __init__(self, memory_store: MemoryStore):
         self.memory_store = memory_store
@@ -100,7 +135,15 @@ class DummyAgentFlow:
             geo_context_source="session_last_target_store",
             media_skip_reason="",
             both_images_sent_state=True,
+            is_first_turn_global=True,
+            first_turn_media_guard_applied=False,
+            kb_repeat_rewritten=True,
+            video_trigger_user_count=2,
         )
+
+    def is_user_first_turn_global(self, user_id_hash: str) -> bool:
+        del user_id_hash
+        return True
 
     def mark_reply_sent(self, session_id: str, user_name: str, reply_text: str):
         del session_id, user_name, reply_text
@@ -187,8 +230,14 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             decision_events = [x for x in lines if x.get("event_type") == "decision_snapshot"]
             assistant_events = [x for x in lines if x.get("event_type") == "assistant_reply"]
+            user_events = [x for x in lines if x.get("event_type") == "user_message"]
             self.assertTrue(decision_events)
             self.assertTrue(assistant_events)
+            self.assertTrue(user_events)
+
+            user_payload = user_events[-1].get("payload", {})
+            self.assertIn("is_first_turn_global", user_payload)
+            self.assertTrue(user_payload.get("is_first_turn_global"))
 
             decision_payload = decision_events[-1].get("payload", {})
             self.assertIn("round_media_blocked", decision_payload)
@@ -199,12 +248,19 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             self.assertIn("kb_match_question", decision_payload)
             self.assertIn("kb_match_mode", decision_payload)
             self.assertIn("kb_confident", decision_payload)
+            self.assertIn("is_first_turn_global", decision_payload)
+            self.assertIn("first_turn_media_guard_applied", decision_payload)
+            self.assertIn("kb_repeat_rewritten", decision_payload)
+            self.assertIn("video_trigger_user_count", decision_payload)
 
             assistant_payload = assistant_events[-1].get("payload", {})
             self.assertIn("round_media_sent", assistant_payload)
             self.assertIn("round_media_sent_types", assistant_payload)
             self.assertIn("round_media_failed_types", assistant_payload)
             self.assertIn("round_media_sent_details", assistant_payload)
+            self.assertIn("is_first_turn_global", assistant_payload)
+            self.assertIn("first_turn_media_guard_applied", assistant_payload)
+            self.assertIn("kb_repeat_rewritten", assistant_payload)
             self.assertTrue(assistant_payload.get("round_media_sent"))
             self.assertIn("contact_image", assistant_payload.get("round_media_sent_types", []))
             self.assertTrue(assistant_payload.get("round_media_sent_details"))
@@ -218,6 +274,38 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             for key in ("target_store", "store_name", "store_address", "detected_region", "route_reason"):
                 self.assertIn(key, attempt_payload)
                 self.assertIn(key, result_payload)
+
+    def test_retry_contact_image_when_verify_timeout_without_confirm(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserFlowRetry()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            payload = {
+                "user_name": "重试用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_retry",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "怎么预约？", "is_user": True},
+                ],
+            }
+
+            processor._on_chat_data(True, payload, auto_reply=True)
+            processor._send_pending_decision()
+
+            self.assertEqual(browser.image_send_calls, 2)
+            session_id = processor._build_session_id("重试用户", "", "fp_retry")
+            log_path = processor.conversation_logger._session_file(session_id)
+            lines = [json.loads(x) for x in log_path.read_text(encoding="utf-8").splitlines() if x.strip()]
+            media_result_events = [x for x in lines if x.get("event_type") == "media_result"]
+            self.assertGreaterEqual(len(media_result_events), 2)
+            self.assertTrue(any(bool(e.get("payload", {}).get("retry_scheduled")) for e in media_result_events))
+            self.assertTrue(any(bool(e.get("payload", {}).get("success")) for e in media_result_events))
 
 
 if __name__ == "__main__":

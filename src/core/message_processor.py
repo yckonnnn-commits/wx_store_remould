@@ -187,6 +187,7 @@ class MessageProcessor(QObject):
             chat_session_fingerprint=chat_session_fingerprint,
         )
         user_hash = self._build_user_hash(user_name=user_name, session_id=session_id)
+        is_first_turn_global = self._detect_user_first_turn_global(user_hash=user_hash)
         if chat_session_fingerprint:
             self.agent.memory_store.update_session_state(
                 session_id=session_id,
@@ -205,6 +206,7 @@ class MessageProcessor(QObject):
                 "chat_session_key": chat_session_key,
                 "chat_session_method": chat_session_method,
                 "chat_session_fingerprint": chat_session_fingerprint,
+                "is_first_turn_global": bool(is_first_turn_global),
             },
         )
 
@@ -259,6 +261,10 @@ class MessageProcessor(QObject):
                 "kb_match_question": str(decision.kb_match_question or ""),
                 "kb_match_mode": str(decision.kb_match_mode or ""),
                 "kb_confident": bool(decision.kb_confident),
+                "is_first_turn_global": bool(decision.is_first_turn_global),
+                "first_turn_media_guard_applied": bool(decision.first_turn_media_guard_applied),
+                "kb_repeat_rewritten": bool(decision.kb_repeat_rewritten),
+                "video_trigger_user_count": int(decision.video_trigger_user_count or 0),
             },
         )
 
@@ -330,6 +336,9 @@ class MessageProcessor(QObject):
                         "round_media_sent_types": list((media_summary or {}).get("sent_types", [])),
                         "round_media_failed_types": list((media_summary or {}).get("failed_types", [])),
                         "round_media_sent_details": list((media_summary or {}).get("sent_details", [])),
+                        "is_first_turn_global": bool(decision.is_first_turn_global),
+                        "first_turn_media_guard_applied": bool(decision.first_turn_media_guard_applied),
+                        "kb_repeat_rewritten": bool(decision.kb_repeat_rewritten),
                     },
                 )
             self._reset_cycle()
@@ -365,6 +374,42 @@ class MessageProcessor(QObject):
         )
 
         def on_media_sent(success, result):
+            retry_count = int(item.get("_retry_count", 0) or 0)
+            if not success and self._should_retry_media_send(
+                media_type=media_type,
+                result=result,
+                retry_count=retry_count,
+            ):
+                self.log_message.emit(f"⚠️ 媒体发送未确认，准备重试: type={media_type}")
+                self._append_training_event(
+                    session_id=session_id,
+                    user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
+                    event_type="media_result",
+                    payload={
+                        "type": media_type,
+                        "path": media_path,
+                        "target_store": item.get("target_store", ""),
+                        "store_name": item.get("store_name", ""),
+                        "store_address": item.get("store_address", ""),
+                        "detected_region": item.get("detected_region", ""),
+                        "route_reason": item.get("route_reason", ""),
+                        "success": False,
+                        "retry_scheduled": True,
+                        "retry_attempt": retry_count + 1,
+                        "result": result if isinstance(result, (dict, str, int, float, bool, type(None))) else str(result),
+                    },
+                )
+                retry_item = dict(item)
+                retry_item["_retry_count"] = retry_count + 1
+                self._send_media_queue(
+                    session_id=session_id,
+                    user_name=user_name,
+                    media_queue=[retry_item] + list(media_queue),
+                    decision=decision,
+                    media_summary=media_summary,
+                )
+                return
+
             if success:
                 self.log_message.emit(f"✅ 媒体发送成功: type={media_type}")
                 if media_summary is not None:
@@ -416,6 +461,8 @@ class MessageProcessor(QObject):
                     "detected_region": item.get("detected_region", ""),
                     "route_reason": item.get("route_reason", ""),
                     "success": bool(success),
+                    "retry_scheduled": False,
+                    "retry_attempt": retry_count,
                     "result": result if isinstance(result, (dict, str, int, float, bool, type(None))) else str(result),
                 },
             )
@@ -442,6 +489,28 @@ class MessageProcessor(QObject):
                 )
 
         self.browser.send_image(media_path, on_media_sent)
+
+    def _should_retry_media_send(self, media_type: str, result: Any, retry_count: int) -> bool:
+        if media_type not in ("contact_image", "address_image"):
+            return False
+        if retry_count >= 1:
+            return False
+
+        if isinstance(result, dict):
+            error_text = str(result.get("error") or result.get("detail") or "")
+            step = str(result.get("step") or "")
+            confirm_clicked = bool(result.get("confirmClicked", False))
+            saw_pending_or_dialog = bool(result.get("sawPendingOrDialog", False))
+            return (
+                step == "verify_timeout"
+                and "图片未检测到实际发送结果" in error_text
+                and not confirm_clicked
+                and not saw_pending_or_dialog
+            )
+
+        if isinstance(result, str):
+            return "图片未检测到实际发送结果" in result
+        return False
 
     def test_grab(self, callback: Callable = None):
         def on_data(success, data):
@@ -517,6 +586,19 @@ class MessageProcessor(QObject):
     def _build_user_hash(self, user_name: str, session_id: str) -> str:
         base = (user_name or "").strip() or session_id
         return self._hash_id(base)
+
+    def _detect_user_first_turn_global(self, user_hash: str) -> bool:
+        if not user_hash:
+            return False
+        try:
+            if hasattr(self.agent, "is_user_first_turn_global"):
+                return bool(self.agent.is_user_first_turn_global(user_id_hash=user_hash))
+            if hasattr(self.agent, "summarize_user_turns_from_logs"):
+                turns = self.agent.summarize_user_turns_from_logs(user_id_hash=user_hash)
+                return int((turns or {}).get("assistant_reply_count", 0) or 0) == 0
+        except Exception:
+            return False
+        return False
 
     def _append_training_event(
         self,
