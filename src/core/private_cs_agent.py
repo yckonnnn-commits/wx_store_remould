@@ -108,6 +108,8 @@ class AgentDecision:
     kb_match_question: str = ""
     kb_match_mode: str = ""
     kb_confident: bool = False
+    kb_blocked_by_polite_guard: bool = False
+    kb_polite_guard_reason: str = ""
     is_first_turn_global: bool = False
     first_turn_media_guard_applied: bool = False
     kb_repeat_rewritten: bool = False
@@ -770,6 +772,8 @@ class CustomerServiceAgent:
     ) -> AgentDecision:
         route_reason = route.get("reason", "unknown")
         contact_sent = int(session_state.get("contact_image_sent_count", 0) or 0) >= 1
+        kb_blocked_by_polite_guard = False
+        kb_polite_guard_reason = ""
 
         if intent == "contact":
             if contact_sent:
@@ -803,6 +807,8 @@ class CustomerServiceAgent:
                 latest_user_text,
                 threshold=self.knowledge_threshold,
             )
+            kb_blocked_by_polite_guard = bool(kb_detail.get("blocked_by_polite_guard", False))
+            kb_polite_guard_reason = str(kb_detail.get("polite_guard_reason", "") or "")
             if kb_detail.get("matched"):
                 kb_answer = str(kb_detail.get("answer", "") or "").strip()
                 return AgentDecision(
@@ -818,6 +824,8 @@ class CustomerServiceAgent:
                     kb_match_question=str(kb_detail.get("question", "") or ""),
                     kb_match_mode=str(kb_detail.get("mode", "") or ""),
                     kb_confident=True,
+                    kb_blocked_by_polite_guard=False,
+                    kb_polite_guard_reason="",
                 )
 
         composed_prompt = self._build_general_llm_prompt(latest_user_text)
@@ -839,6 +847,8 @@ class CustomerServiceAgent:
                 rule_applied=False,
                 llm_model=model_name,
                 llm_fallback_reason=str(result or ""),
+                kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
+                kb_polite_guard_reason=kb_polite_guard_reason,
             )
 
         llm_reply = self._normalize_reply_text(result)
@@ -853,6 +863,8 @@ class CustomerServiceAgent:
             rule_id="LLM_GENERAL",
             rule_applied=False,
             llm_model=model_name,
+            kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
+            kb_polite_guard_reason=kb_polite_guard_reason,
         )
 
     def _rewrite_if_repeated(

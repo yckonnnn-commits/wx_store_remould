@@ -200,6 +200,8 @@ class KnowledgeRepository(QObject):
             "score": 0.0,
             "mode": "none",
             "intent": "",
+            "tags": [],
+            "item_id": "",
         }
         if not user_message or not self._items:
             return detail
@@ -267,6 +269,8 @@ class KnowledgeRepository(QObject):
                     "score": float(best_score),
                     "mode": best_mode,
                     "intent": best_item.intent,
+                    "tags": list(best_item.tags or []),
+                    "item_id": str(best_item.id or ""),
                 }
             )
         return detail

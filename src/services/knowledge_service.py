@@ -108,6 +108,7 @@ class KnowledgeService(QObject):
         "好的", "好", "嗯", "额", "那个", "请问", "想问下", "想问一下",
         "我想问", "麻烦问下", "麻烦问一下"
     )
+    POLITE_CLOSING_REQUIRED_TAGS = ("礼貌", "结束语")
 
     def __init__(self, repository: KnowledgeRepository, address_config_path: Optional[Path] = None):
         super().__init__()
@@ -200,23 +201,55 @@ class KnowledgeService(QObject):
                 "score": 0.0,
                 "mode": "none",
                 "intent": "",
+                "tags": [],
+                "item_id": "",
+                "blocked_by_polite_guard": False,
+                "polite_guard_reason": "",
             }
 
+        blocked_by_polite_guard = False
+        polite_guard_reason = ""
+        normalized_query = self._normalize_for_kb(query)
+
         detail = self.repository.find_best_match_detail(query, threshold)
+        detail, blocked, reason = self._apply_polite_closing_guard(
+            detail=detail,
+            raw_query=query,
+            normalized_query=normalized_query,
+        )
+        if blocked:
+            blocked_by_polite_guard = True
+            polite_guard_reason = reason or "polite_not_exact"
         if detail.get("matched"):
+            detail["blocked_by_polite_guard"] = False
+            detail["polite_guard_reason"] = ""
             return detail
 
-        normalized_query = self._normalize_for_kb(query)
         if normalized_query and normalized_query != query:
             relaxed_threshold = max(0.35, float(threshold) - 0.2)
             detail = self.repository.find_best_match_detail(normalized_query, relaxed_threshold)
+            detail, blocked, reason = self._apply_polite_closing_guard(
+                detail=detail,
+                raw_query=query,
+                normalized_query=normalized_query,
+            )
+            if blocked:
+                blocked_by_polite_guard = True
+                polite_guard_reason = reason or "polite_not_exact"
             if detail.get("matched"):
                 detail["mode"] = f"normalized_{detail.get('mode', 'match')}"
+                detail["blocked_by_polite_guard"] = False
+                detail["polite_guard_reason"] = ""
                 return detail
 
-        intent_fallback = self._find_answer_by_intent_hint_detail(normalized_query or query)
+        intent_fallback = self._find_answer_by_intent_hint_detail(normalized_query or query, raw_query=query)
         if intent_fallback.get("matched"):
+            intent_fallback["blocked_by_polite_guard"] = False
+            intent_fallback["polite_guard_reason"] = ""
             return intent_fallback
+        if intent_fallback.get("blocked_by_polite_guard"):
+            blocked_by_polite_guard = True
+            polite_guard_reason = str(intent_fallback.get("polite_guard_reason", "") or polite_guard_reason)
         return {
             "matched": False,
             "answer": "",
@@ -224,6 +257,10 @@ class KnowledgeService(QObject):
             "score": 0.0,
             "mode": "none",
             "intent": "",
+            "tags": [],
+            "item_id": "",
+            "blocked_by_polite_guard": blocked_by_polite_guard,
+            "polite_guard_reason": polite_guard_reason,
         }
 
     def find_answer(self, user_message: str, threshold: float = 0.6) -> Optional[str]:
@@ -246,7 +283,7 @@ class KnowledgeService(QObject):
         normalized = normalized.replace("是多少", "多少").replace("什么价格", "价格多少")
         return normalized
 
-    def _find_answer_by_intent_hint_detail(self, query: str) -> Dict[str, object]:
+    def _find_answer_by_intent_hint_detail(self, query: str, raw_query: str = "") -> Dict[str, object]:
         text = (query or "").strip()
         if not text:
             return {
@@ -256,6 +293,10 @@ class KnowledgeService(QObject):
                 "score": 0.0,
                 "mode": "intent_hint",
                 "intent": "",
+                "tags": [],
+                "item_id": "",
+                "blocked_by_polite_guard": False,
+                "polite_guard_reason": "",
             }
 
         intents: List[str] = []
@@ -269,6 +310,9 @@ class KnowledgeService(QObject):
             intents.append("general")
 
         items = self.repository.get_all()
+        blocked_by_polite_guard = False
+        polite_guard_reason = ""
+        raw = (raw_query or text).strip()
         for intent in intents:
             candidates = [item for item in items if (item.intent or "").lower() == intent]
             if not candidates:
@@ -277,6 +321,14 @@ class KnowledgeService(QObject):
             best_item = None
             best_score = -1.0
             for item in candidates:
+                if self._is_polite_closing_item(getattr(item, "tags", []) or []):
+                    if not self._is_exact_polite_trigger(raw, item.question):
+                        blocked_by_polite_guard = True
+                        if self._looks_like_mixed_non_polite_query(raw):
+                            polite_guard_reason = "polite_mixed_query"
+                        elif not polite_guard_reason:
+                            polite_guard_reason = "polite_not_exact"
+                        continue
                 score = self._simple_overlap_score(text, item.question)
                 if score > best_score:
                     best_score = score
@@ -291,6 +343,10 @@ class KnowledgeService(QObject):
                     "score": float(best_score),
                     "mode": "intent_hint",
                     "intent": intent,
+                    "tags": list(best_item.tags or []),
+                    "item_id": str(best_item.id or ""),
+                    "blocked_by_polite_guard": False,
+                    "polite_guard_reason": "",
                 }
         return {
             "matched": False,
@@ -299,6 +355,10 @@ class KnowledgeService(QObject):
             "score": 0.0,
             "mode": "intent_hint",
             "intent": "",
+            "tags": [],
+            "item_id": "",
+            "blocked_by_polite_guard": blocked_by_polite_guard,
+            "polite_guard_reason": polite_guard_reason,
         }
 
     def _simple_overlap_score(self, a: str, b: str) -> float:
@@ -316,6 +376,71 @@ class KnowledgeService(QObject):
         if not set_a or not set_b:
             return 0.0
         return len(set_a & set_b) / len(set_a | set_b)
+
+    def _is_polite_closing_item(self, tags: List[str]) -> bool:
+        tag_set = {str(tag).strip() for tag in (tags or []) if str(tag).strip()}
+        return all(required in tag_set for required in self.POLITE_CLOSING_REQUIRED_TAGS)
+
+    def _is_exact_polite_trigger(self, query: str, matched_question: str) -> bool:
+        q = self._normalize_for_kb(query)
+        target = self._normalize_for_kb(matched_question)
+        if not q or not target:
+            return False
+        return q == target
+
+    def _looks_like_mixed_non_polite_query(self, query: str) -> bool:
+        normalized = self._normalize_for_kb(query)
+        if not normalized:
+            return False
+        non_polite_signals = (
+            "怎么办",
+            "怎么",
+            "买",
+            "预约",
+            "价格",
+            "多少",
+            "材质",
+            "地址",
+            "哪里",
+            "在哪",
+            "上海",
+            "北京",
+            "不在",
+            "不是",
+        )
+        return any(token in normalized for token in non_polite_signals)
+
+    def _apply_polite_closing_guard(
+        self,
+        detail: Dict[str, object],
+        raw_query: str,
+        normalized_query: str,
+    ) -> Tuple[Dict[str, object], bool, str]:
+        if not detail.get("matched"):
+            return detail, False, ""
+
+        tags = detail.get("tags", [])
+        if not isinstance(tags, list):
+            tags = []
+        if not self._is_polite_closing_item(tags):
+            return detail, False, ""
+
+        question = str(detail.get("question", "") or "")
+        if self._is_exact_polite_trigger(raw_query, question) or self._is_exact_polite_trigger(normalized_query, question):
+            return detail, False, ""
+
+        reason = "polite_mixed_query" if self._looks_like_mixed_non_polite_query(raw_query) else "polite_not_exact"
+        blocked_detail = {
+            "matched": False,
+            "answer": "",
+            "question": "",
+            "score": 0.0,
+            "mode": "none",
+            "intent": "",
+            "tags": [],
+            "item_id": "",
+        }
+        return blocked_detail, True, reason
 
     def is_address_query(self, text: str) -> bool:
         """是否为地址相关咨询"""

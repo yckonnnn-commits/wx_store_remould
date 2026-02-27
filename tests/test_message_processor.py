@@ -135,6 +135,8 @@ class DummyAgentFlow:
             geo_context_source="session_last_target_store",
             media_skip_reason="",
             both_images_sent_state=True,
+            kb_blocked_by_polite_guard=True,
+            kb_polite_guard_reason="polite_mixed_query",
             is_first_turn_global=True,
             first_turn_media_guard_applied=False,
             kb_repeat_rewritten=True,
@@ -248,10 +250,14 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             self.assertIn("kb_match_question", decision_payload)
             self.assertIn("kb_match_mode", decision_payload)
             self.assertIn("kb_confident", decision_payload)
+            self.assertIn("kb_blocked_by_polite_guard", decision_payload)
+            self.assertIn("kb_polite_guard_reason", decision_payload)
             self.assertIn("is_first_turn_global", decision_payload)
             self.assertIn("first_turn_media_guard_applied", decision_payload)
             self.assertIn("kb_repeat_rewritten", decision_payload)
             self.assertIn("video_trigger_user_count", decision_payload)
+            self.assertTrue(decision_payload.get("kb_blocked_by_polite_guard"))
+            self.assertEqual(decision_payload.get("kb_polite_guard_reason"), "polite_mixed_query")
 
             assistant_payload = assistant_events[-1].get("payload", {})
             self.assertIn("round_media_sent", assistant_payload)

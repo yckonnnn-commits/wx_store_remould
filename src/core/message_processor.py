@@ -261,6 +261,8 @@ class MessageProcessor(QObject):
                 "kb_match_question": str(decision.kb_match_question or ""),
                 "kb_match_mode": str(decision.kb_match_mode or ""),
                 "kb_confident": bool(decision.kb_confident),
+                "kb_blocked_by_polite_guard": bool(decision.kb_blocked_by_polite_guard),
+                "kb_polite_guard_reason": str(decision.kb_polite_guard_reason or ""),
                 "is_first_turn_global": bool(decision.is_first_turn_global),
                 "first_turn_media_guard_applied": bool(decision.first_turn_media_guard_applied),
                 "kb_repeat_rewritten": bool(decision.kb_repeat_rewritten),

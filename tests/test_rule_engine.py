@@ -218,6 +218,54 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d2.reply_source, "llm")
             self.assertEqual(llm.calls, 1)
 
+    def test_repository_match_detail_returns_tags_and_item_id(self):
+        with tempfile.TemporaryDirectory() as td:
+            kb_file = Path(td) / "knowledge.json"
+            kb_file.write_text("[]", encoding="utf-8")
+            repository = KnowledgeRepository(kb_file)
+            item = repository.add("好的谢谢", "不客气姐姐🌹", intent="general", tags=["礼貌", "结束语"])
+
+            detail = repository.find_best_match_detail("好的谢谢", threshold=0.6)
+            self.assertTrue(detail.get("matched"))
+            self.assertIn("tags", detail)
+            self.assertIn("item_id", detail)
+            self.assertEqual(detail.get("item_id"), item.id)
+            self.assertIn("礼貌", detail.get("tags", []))
+
+    def test_polite_closing_kb_requires_exact_match(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, repository, llm = self._build_agent(Path(td))
+            repository.add("好的谢谢", "不客气姐姐🌹", intent="general", tags=["礼貌", "结束语"])
+
+            d1 = agent.decide("chat_polite_exact", "用户礼貌1", "好的谢谢", [])
+            self.assertEqual(d1.reply_source, "knowledge")
+            self.assertEqual(d1.reply_text, "不客气姐姐🌹")
+            self.assertFalse(d1.kb_blocked_by_polite_guard)
+            self.assertEqual(d1.kb_polite_guard_reason, "")
+
+            d2 = agent.decide("chat_polite_mixed", "用户礼貌2", "好的，但是我还想再了解一下", [])
+            self.assertEqual(d2.reply_source, "llm")
+            self.assertTrue(d2.kb_blocked_by_polite_guard)
+            self.assertEqual(d2.kb_polite_guard_reason, "polite_not_exact")
+            self.assertNotEqual(d2.reply_text, "不客气姐姐🌹")
+            self.assertGreaterEqual(llm.calls, 1)
+
+            d3 = agent.decide("chat_polite_mixed_region", "用户礼貌4", "好的，但是我不在上海怎么办啊？", [])
+            self.assertNotEqual(d3.reply_source, "knowledge")
+            self.assertTrue(d3.kb_blocked_by_polite_guard)
+            self.assertEqual(d3.kb_polite_guard_reason, "polite_mixed_query")
+
+    def test_polite_closing_blocked_in_intent_hint_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, repository, llm = self._build_agent(Path(td))
+            repository.add("嗯", "好的姐姐，有任何问题随时问我哦，我一直都在呢🌷", intent="general", tags=["礼貌", "结束语"])
+
+            d = agent.decide("chat_polite_hint", "用户礼貌3", "嗯嗯", [])
+            self.assertEqual(d.reply_source, "llm")
+            self.assertTrue(d.kb_blocked_by_polite_guard)
+            self.assertEqual(d.kb_polite_guard_reason, "polite_not_exact")
+            self.assertGreaterEqual(llm.calls, 1)
+
     def test_kb_repeat_rewritten_by_llm(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
