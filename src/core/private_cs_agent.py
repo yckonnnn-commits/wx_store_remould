@@ -97,6 +97,10 @@ class AgentDecision:
     geo_context_source: str = ""
     media_skip_reason: str = ""
     both_images_sent_state: bool = False
+    kb_match_score: float = 0.0
+    kb_match_question: str = ""
+    kb_match_mode: str = ""
+    kb_confident: bool = False
 
 
 class _SafeDict(dict):
@@ -257,7 +261,11 @@ class CustomerServiceAgent:
         user_hash = self._hash_user(user_name or session_id)
         session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
         user_state = self.memory_store.get_user_state(user_hash)
-        self._sync_media_state_from_conversation_log(session_id=session_id, session_state=session_state)
+        self._sync_media_state_from_conversation_log(
+            session_id=session_id,
+            user_hash=user_hash,
+            session_state=session_state,
+        )
 
         text = (latest_user_text or "").strip()
         route = self.knowledge_service.resolve_store_recommendation(text)
@@ -282,12 +290,13 @@ class CustomerServiceAgent:
                 user_state=user_state,
             )
 
-        decision.reply_text = self._rewrite_if_repeated(
-            reply_text=decision.reply_text,
-            latest_user_text=text,
-            conversation_history=conversation_history or [],
-            user_state=user_state,
-        )
+        if decision.reply_source in ("rule", "llm", "fallback"):
+            decision.reply_text = self._rewrite_if_repeated(
+                reply_text=decision.reply_text,
+                latest_user_text=text,
+                conversation_history=conversation_history or [],
+                user_state=user_state,
+            )
 
         both_images_sent = self._has_both_images_sent(session_state)
         decision.both_images_sent_state = both_images_sent
@@ -339,13 +348,12 @@ class CustomerServiceAgent:
             recent_hashes = recent_hashes[-40:]
         user_state["recent_reply_hashes"] = recent_hashes
 
-        if user_state.get("video_armed") and not user_state.get("video_sent"):
-            user_state["post_contact_reply_count"] = int(user_state.get("post_contact_reply_count", 0) or 0) + 1
-            if int(user_state.get("post_contact_reply_count", 0)) >= 2:
+        session_video = self.summarize_session_video_from_log(session_id=session_id)
+        if session_video.get("contact_sent") and not session_video.get("video_sent"):
+            replies_after_contact = int(session_video.get("assistant_reply_count_after_contact", 0) or 0)
+            if replies_after_contact + 1 >= 2:
                 video_path = self._pick_video_media()
                 if video_path:
-                    user_state["video_armed"] = False
-                    user_state["post_contact_reply_count"] = 0
                     self.memory_store.update_user_state(user_hash, user_state)
                     self.memory_store.save()
                     return {
@@ -390,14 +398,6 @@ class CustomerServiceAgent:
             session_state["contact_image_last_sent_at"] = now
             session_state["contact_warmup"] = False
             session_state["last_geo_pending"] = False
-
-            user_state["video_armed"] = True
-            user_state["post_contact_reply_count"] = 0
-
-        elif media_type == "delayed_video":
-            user_state["video_sent"] = True
-            user_state["video_armed"] = False
-            user_state["post_contact_reply_count"] = 0
 
         self.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
         self.memory_store.update_user_state(user_hash, user_state)
@@ -708,13 +708,14 @@ class CustomerServiceAgent:
 
         # 规则外：先知识库，未命中再 LLM
         if self.use_knowledge_first:
-            kb_answer = self.knowledge_service.find_answer(
+            kb_detail = self.knowledge_service.find_answer_detail(
                 latest_user_text,
                 threshold=self.knowledge_threshold,
             )
-            if kb_answer:
+            if kb_detail.get("matched"):
+                kb_answer = str(kb_detail.get("answer", "") or "").strip()
                 return AgentDecision(
-                    reply_text=self._normalize_reply_text(kb_answer),
+                    reply_text=kb_answer,
                     intent=intent,
                     route_reason=route_reason,
                     reply_goal="解答",
@@ -722,6 +723,10 @@ class CustomerServiceAgent:
                     reply_source="knowledge",
                     rule_id="KB_MATCH",
                     rule_applied=False,
+                    kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
+                    kb_match_question=str(kb_detail.get("question", "") or ""),
+                    kb_match_mode=str(kb_detail.get("mode", "") or ""),
+                    kb_confident=True,
                 )
 
         composed_prompt = self._build_general_llm_prompt(latest_user_text)
@@ -811,10 +816,7 @@ class CustomerServiceAgent:
         skip_reason = ""
         target_store = route.get("target_store", "unknown")
         reason = route_reason or route.get("reason", "unknown")
-        both_images_sent = self._has_both_images_sent(session_state)
-
-        if both_images_sent and media_plan in ("address_image", "contact_image"):
-            return [], "both_images_already_sent"
+        detected_region = route.get("detected_region", "") or ""
 
         if media_plan == "address_image":
             if target_store == "unknown":
@@ -823,6 +825,8 @@ class CustomerServiceAgent:
                 session_id=session_id,
                 session_state=session_state,
                 target_store=target_store,
+                route_reason=reason,
+                detected_region=detected_region,
             )
             if item:
                 items.append(item)
@@ -844,10 +848,6 @@ class CustomerServiceAgent:
                 skip_reason = reason_hint
 
         # delayed_video 不即时发送，仍由发送回执推进。
-        if media_plan == "delayed_video" and not user_state.get("video_sent"):
-            user_state["video_armed"] = True
-            user_state["post_contact_reply_count"] = 0
-
         return items, skip_reason
 
     def _queue_address_image(
@@ -855,6 +855,8 @@ class CustomerServiceAgent:
         session_id: str,
         session_state: Dict[str, Any],
         target_store: str,
+        route_reason: str,
+        detected_region: str,
     ) -> Tuple[Optional[Dict[str, Any]], str]:
         if target_store == "unknown":
             return None, "address_target_unknown"
@@ -883,11 +885,17 @@ class CustomerServiceAgent:
         if not image_path:
             return None, "address_image_missing"
 
+        store = self.knowledge_service.get_store_display(target_store)
+
         return (
             {
                 "type": "address_image",
                 "path": image_path,
                 "target_store": target_store,
+                "store_name": store.get("store_name", ""),
+                "store_address": store.get("store_address", ""),
+                "detected_region": detected_region,
+                "route_reason": route_reason,
             },
             "",
         )
@@ -907,10 +915,7 @@ class CustomerServiceAgent:
         whitelist = self._is_media_whitelist_session(session_id)
         if not whitelist:
             sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
-            if intent == "purchase":
-                if self._is_contact_image_sent_for_current_geo(session_state):
-                    return None, "contact_image_already_sent_for_geo"
-            elif sent_count >= 1:
+            if sent_count >= 1:
                 return None, "contact_image_already_sent"
 
         if reason == "out_of_coverage" or intent in ("contact", "purchase"):
@@ -918,7 +923,9 @@ class CustomerServiceAgent:
                 {
                     "type": "contact_image",
                     "path": random.choice(self._contact_images),
-                    "region": route.get("detected_region", "") or route_region(reason, text),
+                    "detected_region": route.get("detected_region", "") or route_region(reason, text),
+                    "route_reason": reason,
+                    "target_store": route.get("target_store", ""),
                 },
                 "",
             )
@@ -926,19 +933,7 @@ class CustomerServiceAgent:
         return None, "contact_image_not_applicable"
 
     def _is_contact_image_sent_for_current_geo(self, session_state: Dict[str, Any]) -> bool:
-        sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
-        if sent_count <= 0:
-            return False
-
-        contact_sent_at = self._parse_iso(str(session_state.get("contact_image_last_sent_at", "") or "").strip())
-        geo_updated_at = self._parse_iso(str(session_state.get("last_geo_updated_at", "") or "").strip())
-
-        if contact_sent_at and geo_updated_at:
-            return contact_sent_at >= geo_updated_at
-        if contact_sent_at and not geo_updated_at:
-            return True
-        # 兼容旧数据：只有计数没有时间戳时，不阻塞当前地理上下文首次发送
-        return False
+        return int(session_state.get("contact_image_sent_count", 0) or 0) > 0
 
     def _has_both_images_sent(self, session_state: Dict[str, Any]) -> bool:
         return (
@@ -946,20 +941,30 @@ class CustomerServiceAgent:
             and int(session_state.get("contact_image_sent_count", 0) or 0) > 0
         )
 
-    def _sync_media_state_from_conversation_log(self, session_id: str, session_state: Dict[str, Any]) -> None:
-        summary = self._summarize_media_state_from_log(session_id=session_id)
-        session_state["address_image_sent_count"] = int(summary.get("address_image_sent_count", 0) or 0)
-        session_state["contact_image_sent_count"] = int(summary.get("contact_image_sent_count", 0) or 0)
-        session_state["address_image_last_sent_at_by_store"] = dict(summary.get("address_image_last_sent_at_by_store", {}) or {})
-        session_state["sent_address_stores"] = list(summary.get("sent_address_stores", []) or [])
-        session_state["contact_image_last_sent_at"] = str(summary.get("contact_image_last_sent_at", "") or "")
+    def _sync_media_state_from_conversation_log(
+        self,
+        session_id: str,
+        user_hash: str,
+        session_state: Dict[str, Any],
+    ) -> None:
+        user_summary = self.summarize_user_media_from_logs(user_id_hash=user_hash)
+        session_state["address_image_sent_count"] = int(user_summary.get("address_image_sent_count", 0) or 0)
+        session_state["contact_image_sent_count"] = int(user_summary.get("contact_image_sent_count", 0) or 0)
+        session_state["address_image_last_sent_at_by_store"] = dict(user_summary.get("address_image_last_sent_at_by_store", {}) or {})
+        session_state["sent_address_stores"] = list(user_summary.get("sent_address_stores", []) or [])
+        session_state["contact_image_last_sent_at"] = str(user_summary.get("contact_image_last_sent_at", "") or "")
 
-        latest_store = str(summary.get("last_target_store", "") or "").strip()
+        latest_store = str(user_summary.get("last_target_store", "") or "").strip()
         if latest_store:
             session_state["last_target_store"] = latest_store
 
-    def _summarize_media_state_from_log(self, session_id: str) -> Dict[str, Any]:
-        default_summary = {
+        session_video = self.summarize_session_video_from_log(session_id=session_id)
+        session_state["session_video_armed"] = bool(session_video.get("contact_sent"))
+        session_state["session_video_sent"] = bool(session_video.get("video_sent"))
+        session_state["session_post_contact_reply_count"] = int(session_video.get("assistant_reply_count_after_contact", 0) or 0)
+
+    def summarize_user_media_from_logs(self, user_id_hash: str) -> Dict[str, Any]:
+        summary = {
             "address_image_sent_count": 0,
             "contact_image_sent_count": 0,
             "address_image_last_sent_at_by_store": {},
@@ -967,22 +972,111 @@ class CustomerServiceAgent:
             "contact_image_last_sent_at": "",
             "last_target_store": "",
         }
+        if not user_id_hash:
+            return summary
+
+        address_ts_map: Dict[str, datetime] = {}
+        sent_address_stores: set[str] = set()
+        last_target_store = ""
+        last_target_store_ts: Optional[datetime] = None
+        contact_last_ts: Optional[datetime] = None
+
+        for log_path in self.conversation_log_dir.glob("*.jsonl"):
+            records = self._scan_session_media_records(log_path=log_path, user_id_hash=user_id_hash)
+            for rec in records:
+                media_type = rec.get("type", "")
+                ts = self._parse_iso(str(rec.get("timestamp", "") or ""))
+                if media_type == "address_image":
+                    summary["address_image_sent_count"] += 1
+                    target_store = str(rec.get("target_store", "") or "")
+                    if target_store:
+                        sent_address_stores.add(target_store)
+                        if ts and (target_store not in address_ts_map or ts > address_ts_map[target_store]):
+                            address_ts_map[target_store] = ts
+                        if ts and (not last_target_store_ts or ts > last_target_store_ts):
+                            last_target_store = target_store
+                            last_target_store_ts = ts
+                        elif not ts and not last_target_store:
+                            last_target_store = target_store
+                elif media_type == "contact_image":
+                    summary["contact_image_sent_count"] += 1
+                    if ts and (not contact_last_ts or ts > contact_last_ts):
+                        contact_last_ts = ts
+
+        summary["sent_address_stores"] = sorted(sent_address_stores)
+        summary["last_target_store"] = last_target_store
+        summary["address_image_last_sent_at_by_store"] = {
+            store: dt.isoformat() for store, dt in address_ts_map.items()
+        }
+        if contact_last_ts:
+            summary["contact_image_last_sent_at"] = contact_last_ts.isoformat()
+        return summary
+
+    def summarize_session_video_from_log(self, session_id: str) -> Dict[str, Any]:
+        summary = {
+            "contact_sent": False,
+            "video_sent": False,
+            "assistant_reply_count_after_contact": 0,
+        }
         log_path = self._session_log_file(session_id)
         if not log_path.exists():
-            return default_summary
+            return summary
 
-        pending_attempt_paths: Dict[str, List[str]] = {
+        try:
+            lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except Exception:
+            return summary
+
+        latest_contact_idx = -1
+        for idx, record in enumerate(lines):
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("event_type", "") or "") != "media_result":
+                continue
+            payload = record.get("payload", {})
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("type", "") or "") == "contact_image" and bool(payload.get("success")):
+                latest_contact_idx = idx
+
+        if latest_contact_idx < 0:
+            return summary
+        summary["contact_sent"] = True
+
+        pending_user_round = False
+        reply_count = 0
+        for idx in range(latest_contact_idx + 1, len(lines)):
+            record = lines[idx]
+            if not isinstance(record, dict):
+                continue
+            event_type = str(record.get("event_type", "") or "")
+            payload = record.get("payload", {})
+            if not isinstance(payload, dict):
+                payload = {}
+
+            if event_type == "media_result":
+                if str(payload.get("type", "") or "") == "delayed_video" and bool(payload.get("success")):
+                    summary["video_sent"] = True
+            elif event_type == "user_message":
+                pending_user_round = True
+            elif event_type == "assistant_reply" and pending_user_round:
+                sent_types = payload.get("round_media_sent_types", [])
+                if isinstance(sent_types, list) and "contact_image" in sent_types:
+                    pending_user_round = False
+                    continue
+                reply_count += 1
+                pending_user_round = False
+
+        summary["assistant_reply_count_after_contact"] = reply_count
+        return summary
+
+    def _scan_session_media_records(self, log_path: Path, user_id_hash: str) -> List[Dict[str, Any]]:
+        records: List[Dict[str, Any]] = []
+        pending_attempts: Dict[str, List[Dict[str, Any]]] = {
             "address_image": [],
             "contact_image": [],
             "delayed_video": [],
         }
-        address_image_sent_count = 0
-        contact_image_sent_count = 0
-        address_last_sent_by_store: Dict[str, str] = {}
-        sent_address_stores: set[str] = set()
-        contact_image_last_sent_at = ""
-        last_target_store = ""
-
         try:
             for raw_line in log_path.read_text(encoding="utf-8").splitlines():
                 line = raw_line.strip()
@@ -994,6 +1088,8 @@ class CustomerServiceAgent:
                     continue
                 if not isinstance(record, dict):
                     continue
+                if str(record.get("user_id_hash", "") or "") != user_id_hash:
+                    continue
                 event_type = str(record.get("event_type", "") or "")
                 payload = record.get("payload", {})
                 if not isinstance(payload, dict):
@@ -1001,49 +1097,47 @@ class CustomerServiceAgent:
 
                 if event_type == "media_attempt":
                     media_type = str(payload.get("type", "") or "")
-                    media_path = str(payload.get("path", "") or "")
-                    if media_type in pending_attempt_paths:
-                        pending_attempt_paths[media_type].append(media_path)
+                    if media_type in pending_attempts:
+                        pending_attempts[media_type].append(payload)
                     continue
 
                 if event_type != "media_result":
                     continue
 
                 media_type = str(payload.get("type", "") or "")
-                if media_type not in pending_attempt_paths:
+                if media_type not in pending_attempts:
                     continue
-                success = bool(payload.get("success"))
-                media_path = ""
-                queue = pending_attempt_paths.get(media_type, [])
+                if not bool(payload.get("success")):
+                    queue = pending_attempts.get(media_type, [])
+                    if queue:
+                        queue.pop(0)
+                    continue
+
+                attempt_payload = {}
+                queue = pending_attempts.get(media_type, [])
                 if queue:
-                    media_path = str(queue.pop(0) or "")
-                if not success:
-                    continue
+                    attempt_payload = queue.pop(0)
 
-                timestamp = str(record.get("timestamp", "") or "")
-                if media_type == "address_image":
-                    address_image_sent_count += 1
-                    target_store = self._infer_store_from_image_path(media_path)
-                    if target_store:
-                        sent_address_stores.add(target_store)
-                        last_target_store = target_store
-                        if timestamp:
-                            address_last_sent_by_store[target_store] = timestamp
-                elif media_type == "contact_image":
-                    contact_image_sent_count += 1
-                    if timestamp:
-                        contact_image_last_sent_at = timestamp
+                path = str((attempt_payload or {}).get("path", "") or "")
+                target_store = str((attempt_payload or {}).get("target_store", "") or "").strip()
+                if media_type == "address_image" and not target_store:
+                    target_store = self._infer_store_from_image_path(path)
+
+                records.append(
+                    {
+                        "type": media_type,
+                        "timestamp": str(record.get("timestamp", "") or ""),
+                        "path": path,
+                        "target_store": target_store,
+                        "store_name": str((attempt_payload or {}).get("store_name", "") or ""),
+                        "store_address": str((attempt_payload or {}).get("store_address", "") or ""),
+                        "detected_region": str((attempt_payload or {}).get("detected_region", "") or ""),
+                        "route_reason": str((attempt_payload or {}).get("route_reason", "") or ""),
+                    }
+                )
         except Exception:
-            return default_summary
-
-        return {
-            "address_image_sent_count": address_image_sent_count,
-            "contact_image_sent_count": contact_image_sent_count,
-            "address_image_last_sent_at_by_store": address_last_sent_by_store,
-            "sent_address_stores": sorted(sent_address_stores),
-            "contact_image_last_sent_at": contact_image_last_sent_at,
-            "last_target_store": last_target_store,
-        }
+            return records
+        return records
 
     def _session_log_file(self, session_id: str) -> Path:
         safe = re.sub(r"[^0-9A-Za-z_\-]", "_", session_id or "unknown")

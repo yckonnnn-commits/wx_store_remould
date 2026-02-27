@@ -191,54 +191,91 @@ class KnowledgeRepository(QObject):
         self._search_cache[cache_key] = result_items
         return result_items
 
-    def find_best_match(self, user_message: str, threshold: float = 0.6) -> Optional[Tuple[str, float]]:
-        """找到最佳匹配的知识库答案
-
-        Args:
-            user_message: 用户消息
-            threshold: 匹配阈值 (0-1)
-
-        Returns:
-            (answer, score) 或 None
-        """
+    def find_best_match_detail(self, user_message: str, threshold: float = 0.6) -> Dict[str, object]:
+        """找到最佳匹配答案，并返回命中细节。"""
+        detail: Dict[str, object] = {
+            "matched": False,
+            "answer": "",
+            "question": "",
+            "score": 0.0,
+            "mode": "none",
+            "intent": "",
+        }
         if not user_message or not self._items:
-            return None
+            return detail
 
-        user_lower = user_message.lower()
-        best_match = None
+        query_raw = (user_message or "").strip()
+        query = query_raw.lower()
+        best_item: Optional[KnowledgeItem] = None
         best_score = 0.0
+        best_mode = "none"
+
+        query_variants = [x.strip().lower() for x in re.split(r"[？?；;、，,。!\n]+", query_raw) if x.strip()]
+        if not query_variants:
+            query_variants = [query]
 
         for item in self._items:
-            question_lower = item.question.lower()
+            question = (item.question or "").strip()
+            if not question:
+                continue
+            question_lower = question.lower()
 
-            # 精确匹配
-            if user_lower == question_lower:
-                return (item.answer, 1.0)
+            for variant in query_variants:
+                if not variant:
+                    continue
+                score = 0.0
+                mode = "none"
 
-            # 包含匹配
-            if user_lower in question_lower or question_lower in user_lower:
-                score = 0.8
+                if variant == question_lower:
+                    score = 1.0
+                    mode = "exact"
+                elif variant in question_lower or question_lower in variant:
+                    score = 0.8
+                    mode = "contains"
+                else:
+                    user_words = set(re.findall(r"\w+", variant))
+                    question_words = set(re.findall(r"\w+", question_lower))
+                    if user_words and question_words:
+                        union = user_words | question_words
+                        if union:
+                            overlap = len(user_words & question_words) / len(union)
+                            if overlap > score:
+                                score = overlap
+                                mode = "token_overlap"
+
+                    set_a = set(re.sub(r"\s+", "", variant))
+                    set_b = set(re.sub(r"\s+", "", question_lower))
+                    if set_a and set_b:
+                        union = set_a | set_b
+                        if union:
+                            char_overlap = len(set_a & set_b) / len(union)
+                            if char_overlap > score:
+                                score = char_overlap
+                                mode = "char_overlap"
+
                 if score > best_score:
                     best_score = score
-                    best_match = item.answer
-                continue
+                    best_item = item
+                    best_mode = mode
 
-            # 关键词匹配
-            user_words = set(re.findall(r'\w+', user_lower))
-            question_words = set(re.findall(r'\w+', question_lower))
+        if best_item and best_score >= threshold:
+            detail.update(
+                {
+                    "matched": True,
+                    "answer": best_item.answer,
+                    "question": best_item.question,
+                    "score": float(best_score),
+                    "mode": best_mode,
+                    "intent": best_item.intent,
+                }
+            )
+        return detail
 
-            if user_words and question_words:
-                intersection = user_words & question_words
-                union = user_words | question_words
-                if union:
-                    score = len(intersection) / len(union)
-                    if score > best_score:
-                        best_score = score
-                        best_match = item.answer
-
-        if best_match and best_score >= threshold:
-            return (best_match, best_score)
-
+    def find_best_match(self, user_message: str, threshold: float = 0.6) -> Optional[Tuple[str, float]]:
+        """找到最佳匹配的知识库答案（兼容旧接口）。"""
+        detail = self.find_best_match_detail(user_message=user_message, threshold=threshold)
+        if detail.get("matched"):
+            return str(detail.get("answer", "") or ""), float(detail.get("score", 0.0) or 0.0)
         return None
 
     def import_from_file(self, file_path: Path) -> Tuple[int, int]:

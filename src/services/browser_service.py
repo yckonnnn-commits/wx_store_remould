@@ -1297,8 +1297,12 @@ class BrowserService(QObject):
             "enter_error": "",
             "enter_attempt": 0,
             "dialog_closed": False,
+            "saw_pending_or_dialog": False,
+            "retriggered": False,
+            "image_button_x": 0.0,
+            "image_button_y": 0.0,
         }
-        max_verify_attempts = 10
+        max_verify_attempts = 20
         max_enter_attempts = 2
 
         def finish(success: bool, payload: Dict[str, Any]):
@@ -1307,6 +1311,77 @@ class BrowserService(QObject):
             state["done"] = True
             if callback:
                 callback(success, payload)
+
+        def confirm_with_enter():
+            if state["done"]:
+                return
+            state["enter_attempt"] += 1
+            entered, enter_err = self._native_press_enter()
+            if not entered:
+                state["enter_error"] = enter_err
+
+            def on_dialog_state(checked_success, checked_result):
+                dialog_state = self._parse_js_payload(checked_result) if checked_success else {}
+                dialog_visible = bool(dialog_state.get("dialog_visible", False))
+                send_btn_visible = bool(dialog_state.get("send_button_in_dialog_visible", False))
+
+                if dialog_visible:
+                    state["saw_pending_or_dialog"] = True
+
+                if not dialog_visible:
+                    state["dialog_closed"] = True
+                    QTimer.singleShot(300, poll_delivery)
+                    return
+
+                # Enter 后弹窗仍未关闭：继续重试，不直接当成功。
+                if state["enter_attempt"] < max_enter_attempts:
+                    QTimer.singleShot(220, confirm_with_enter)
+                    return
+
+                if not send_btn_visible:
+                    # 弹窗还在但按钮未就绪，进入轮询等待，不当成功。
+                    QTimer.singleShot(320, poll_delivery)
+                    return
+
+                # Enter 多次后仍在弹窗，改为精准点击弹窗内“发送*”按钮。
+                state["confirm_clicked"] = True
+                clicked_confirm, confirm_err = self._native_left_click(
+                    dialog_state.get("send_button_x", 0),
+                    dialog_state.get("send_button_y", 0),
+                )
+                if not clicked_confirm:
+                    finish(
+                        False,
+                        {
+                            "error": f"弹窗内发送按钮点击失败: {confirm_err}",
+                            "step": "confirm_click_after_enter",
+                            "triggerMethod": state["trigger_method"],
+                        },
+                    )
+                    return
+
+                QTimer.singleShot(320, poll_delivery)
+
+            QTimer.singleShot(280, lambda: self._get_media_dialog_state(on_dialog_state))
+
+        def trigger_pick_and_confirm():
+            if state["done"]:
+                return
+            x = float(state.get("image_button_x", 0) or 0)
+            y = float(state.get("image_button_y", 0) or 0)
+            clicked, click_err = self._native_left_click(x, y)
+            if not clicked:
+                finish(
+                    False,
+                    {
+                        "error": f"点击图片按钮失败: {click_err}",
+                        "step": "native_click_image_button",
+                        "triggerMethod": state.get("trigger_method", "unknown"),
+                    },
+                )
+                return
+            # 让文件选择与弹层渲染完成后再确认发送（此前 1000ms 容易错过确认窗口）。
+            QTimer.singleShot(500, confirm_with_enter)
 
         def poll_delivery():
             if state["done"]:
@@ -1317,6 +1392,8 @@ class BrowserService(QObject):
                 signature = self._parse_js_payload(result) if success else {}
                 pending_visible = bool(signature.get("pending_media_send_visible", False))
                 dialog_visible = bool(signature.get("dialog_visible", False))
+                if pending_visible or dialog_visible:
+                    state["saw_pending_or_dialog"] = True
                 if not pending_visible and not dialog_visible:
                     state["dialog_closed"] = True
 
@@ -1379,12 +1456,53 @@ class BrowserService(QObject):
                     return
 
                 if state["verify_attempt"] >= max_verify_attempts:
+                    # 首次超时且没看到可确认状态：自动重试一次点击图片按钮，降低偶发点击丢失带来的失败率。
+                    if (
+                        not state.get("retriggered", False)
+                        and not state.get("confirm_clicked", False)
+                        and not pending_visible
+                        and not dialog_visible
+                    ):
+                        state["retriggered"] = True
+                        state["verify_attempt"] = 0
+                        state["enter_attempt"] = 0
+                        state["dialog_closed"] = False
+                        state["enter_error"] = ""
+                        QTimer.singleShot(280, trigger_pick_and_confirm)
+                        return
+
+                    # 兜底：如果已进入过发送确认流程但签名未变化，按弱确认处理为成功，避免误判漏发。
+                    if (
+                        state.get("confirm_clicked", False)
+                        and state.get("saw_pending_or_dialog", False)
+                        and not pending_visible
+                        and not dialog_visible
+                        and state.get("dialog_closed", False)
+                    ):
+                        finish(
+                            True,
+                            {
+                                "success": True,
+                                "step": "verified_soft_timeout",
+                                "warning": "signature_not_changed_after_confirm",
+                                "triggerMethod": state.get("trigger_method", "unknown"),
+                                "verifyAttempts": state["verify_attempt"],
+                                "sendMethod": "native_click_enter_with_delivery_check",
+                                "signature": signature,
+                            },
+                        )
+                        return
+
                     finish(
                         False,
                         {
                             "error": "图片未检测到实际发送结果",
                             "step": "verify_timeout",
                             "triggerMethod": state.get("trigger_method", "unknown"),
+                            "verifyAttempts": state["verify_attempt"],
+                            "enterAttempts": state.get("enter_attempt", 0),
+                            "confirmClicked": bool(state.get("confirm_clicked", False)),
+                            "sawPendingOrDialog": bool(state.get("saw_pending_or_dialog", False)),
                             "signature": signature,
                         },
                     )
@@ -1438,68 +1556,9 @@ class BrowserService(QObject):
             x = pos_data.get("x", 0)
             y = pos_data.get("y", 0)
             state["trigger_method"] = pos_data.get("method", "unknown")
-
-            clicked, click_err = self._native_left_click(x, y)
-            if not clicked:
-                finish(
-                    False,
-                    {
-                        "error": f"点击图片按钮失败: {click_err}",
-                        "step": "native_click_image_button",
-                        "triggerMethod": state["trigger_method"],
-                    },
-                )
-                return
-
-            # 让文件选择与弹层渲染完成后再确认发送（此前 1000ms 容易错过确认窗口）。
-            def confirm_with_enter():
-                state["enter_attempt"] += 1
-                entered, enter_err = self._native_press_enter()
-                if not entered:
-                    state["enter_error"] = enter_err
-
-                def on_dialog_state(checked_success, checked_result):
-                    dialog_state = self._parse_js_payload(checked_result) if checked_success else {}
-                    dialog_visible = bool(dialog_state.get("dialog_visible", False))
-                    send_btn_visible = bool(dialog_state.get("send_button_in_dialog_visible", False))
-
-                    if not dialog_visible:
-                        state["dialog_closed"] = True
-                        QTimer.singleShot(300, poll_delivery)
-                        return
-
-                    # Enter 后弹窗仍未关闭：继续重试，不直接当成功。
-                    if state["enter_attempt"] < max_enter_attempts:
-                        QTimer.singleShot(220, confirm_with_enter)
-                        return
-
-                    if not send_btn_visible:
-                        # 弹窗还在但按钮未就绪，进入轮询等待，不当成功。
-                        QTimer.singleShot(320, poll_delivery)
-                        return
-
-                    # Enter 多次后仍在弹窗，改为精准点击弹窗内“发送*”按钮。
-                    state["confirm_clicked"] = True
-                    clicked_confirm, confirm_err = self._native_left_click(
-                        dialog_state.get("send_button_x", 0),
-                        dialog_state.get("send_button_y", 0),
-                    )
-                    if not clicked_confirm:
-                        finish(
-                            False,
-                            {
-                                "error": f"弹窗内发送按钮点击失败: {confirm_err}",
-                                "step": "confirm_click_after_enter",
-                                "triggerMethod": state["trigger_method"],
-                            },
-                        )
-                        return
-
-                    QTimer.singleShot(320, poll_delivery)
-
-                QTimer.singleShot(280, lambda: self._get_media_dialog_state(on_dialog_state))
-
-            QTimer.singleShot(500, confirm_with_enter)
+            state["image_button_x"] = float(x or 0)
+            state["image_button_y"] = float(y or 0)
+            trigger_pick_and_confirm()
 
         def on_baseline_signature(success, result):
             baseline = self._parse_js_payload(result) if success else {}

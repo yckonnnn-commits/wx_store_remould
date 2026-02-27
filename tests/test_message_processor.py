@@ -83,7 +83,17 @@ class DummyAgentFlow:
             route_reason="known_geo_context",
             reply_goal="推进购买意图",
             media_plan="contact_image",
-            media_items=[{"type": "contact_image", "path": "dummy.jpg"}],
+            media_items=[
+                {
+                    "type": "contact_image",
+                    "path": "dummy.jpg",
+                    "target_store": "sh_xuhui",
+                    "store_name": "上海徐汇门店",
+                    "store_address": "徐汇区漕溪北路45号中航德必大厦",
+                    "detected_region": "闵行",
+                    "route_reason": "sh_district_map:闵行",
+                }
+            ],
             reply_source="rule",
             rule_id="PURCHASE_TEST",
             rule_applied=True,
@@ -185,13 +195,29 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             self.assertIn("round_media_block_reason", decision_payload)
             self.assertIn("round_media_planned_types", decision_payload)
             self.assertIn("both_images_sent_state", decision_payload)
+            self.assertIn("kb_match_score", decision_payload)
+            self.assertIn("kb_match_question", decision_payload)
+            self.assertIn("kb_match_mode", decision_payload)
+            self.assertIn("kb_confident", decision_payload)
 
             assistant_payload = assistant_events[-1].get("payload", {})
             self.assertIn("round_media_sent", assistant_payload)
             self.assertIn("round_media_sent_types", assistant_payload)
             self.assertIn("round_media_failed_types", assistant_payload)
+            self.assertIn("round_media_sent_details", assistant_payload)
             self.assertTrue(assistant_payload.get("round_media_sent"))
             self.assertIn("contact_image", assistant_payload.get("round_media_sent_types", []))
+            self.assertTrue(assistant_payload.get("round_media_sent_details"))
+
+            media_attempt_events = [x for x in lines if x.get("event_type") == "media_attempt"]
+            media_result_events = [x for x in lines if x.get("event_type") == "media_result"]
+            self.assertTrue(media_attempt_events)
+            self.assertTrue(media_result_events)
+            attempt_payload = media_attempt_events[-1].get("payload", {})
+            result_payload = media_result_events[-1].get("payload", {})
+            for key in ("target_store", "store_name", "store_address", "detected_region", "route_reason"):
+                self.assertIn(key, attempt_payload)
+                self.assertIn(key, result_payload)
 
 
 if __name__ == "__main__":

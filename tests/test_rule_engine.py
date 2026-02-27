@@ -96,7 +96,15 @@ class RuleEngineTestCase(unittest.TestCase):
         )
         return agent, knowledge_service, repository, llm_service
 
-    def _append_media_success_log(self, conversations_dir: Path, session_id: str, media_type: str, media_path: str, ts: str) -> None:
+    def _append_media_success_log(
+        self,
+        conversations_dir: Path,
+        session_id: str,
+        media_type: str,
+        media_path: str,
+        ts: str,
+        user_id_hash: str,
+    ) -> None:
         log_file = conversations_dir / f"{session_id}.jsonl"
         records = []
         if log_file.exists():
@@ -111,7 +119,7 @@ class RuleEngineTestCase(unittest.TestCase):
                 {
                     "timestamp": ts,
                     "session_id": session_id,
-                    "user_id_hash": "u_test",
+                    "user_id_hash": user_id_hash,
                     "event_type": "media_attempt",
                     "reply_source": "",
                     "rule_id": "",
@@ -121,7 +129,7 @@ class RuleEngineTestCase(unittest.TestCase):
                 {
                     "timestamp": ts,
                     "session_id": session_id,
-                    "user_id_hash": "u_test",
+                    "user_id_hash": user_id_hash,
                     "event_type": "media_result",
                     "reply_source": "",
                     "rule_id": "",
@@ -179,6 +187,29 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d2.reply_source, "llm")
             self.assertEqual(llm.calls, 1)
 
+    def test_kb_match_returns_original_answer_without_rewrite(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, repository, llm = self._build_agent(Path(td))
+            repository.add(
+                "会掉吗头发？会掉吗？",
+                "非常牢固，我们有客户戴着做过山车都没问题！🎢",
+                intent="wearing",
+                tags=["佩戴体验"],
+            )
+
+            user_name = "用户KB"
+            user_hash = agent._hash_user(user_name)
+            user_state = agent.memory_store.get_user_state(user_hash)
+            user_state["recent_reply_hashes"] = [
+                agent._normalize_for_dedupe("非常牢固，我们有客户戴着做过山车都没问题！🎢")
+            ]
+            agent.memory_store.update_user_state(user_hash, user_state)
+
+            d = agent.decide("chat_kb_exact", user_name, "会掉吗？", [])
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.reply_text, "非常牢固，我们有客户戴着做过山车都没问题！🎢")
+            self.assertEqual(llm.calls, 0)
+
     def test_contact_image_frequency_and_whitelist(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
@@ -192,12 +223,14 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d1.media_plan, "contact_image")
             self.assertTrue(d1.media_items)
             agent.mark_media_sent(s1, user_name, d1.media_items[0], success=True)
+            user_hash = agent._hash_user(user_name)
             self._append_media_success_log(
                 conversations_dir=conversations_dir,
                 session_id=s1,
                 media_type="contact_image",
                 media_path=d1.media_items[0]["path"],
                 ts="2999-01-01T00:00:00",
+                user_id_hash=user_hash,
             )
 
             d2 = agent.decide(s1, user_name, "我在黑龙江怎么买", [])
@@ -214,30 +247,81 @@ class RuleEngineTestCase(unittest.TestCase):
                 media_type="contact_image",
                 media_path=d3.media_items[0]["path"],
                 ts="2999-01-01T00:01:00",
+                user_id_hash=user_hash,
             )
 
             d4 = agent.decide(white_session, user_name, "我在黑龙江怎么买", [])
             self.assertEqual(d4.media_plan, "contact_image")
             self.assertTrue(d4.media_items)
 
-    def test_video_user_once(self):
+    def test_video_session_once_with_log_driven_state(self):
         with tempfile.TemporaryDirectory() as td:
-            agent, _, _, _ = self._build_agent(Path(td), whitelist_sessions=["chat_a", "chat_b"])
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
             user_name = "用户D"
+            user_hash = agent._hash_user(user_name)
 
             d1 = agent.decide("chat_a", user_name, "我在黑龙江怎么买", [])
             agent.mark_media_sent("chat_a", user_name, d1.media_items[0], success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id="chat_a",
+                media_type="contact_image",
+                media_path=d1.media_items[0]["path"],
+                ts="2026-02-27T10:00:00",
+                user_id_hash=user_hash,
+            )
+            # 联系方式图之后的第一轮（有 user_message + assistant_reply）
+            (conversations_dir / "chat_a.jsonl").write_text(
+                (conversations_dir / "chat_a.jsonl").read_text(encoding="utf-8")
+                + json.dumps(
+                    {
+                        "timestamp": "2026-02-27T10:00:01",
+                        "session_id": "chat_a",
+                        "user_id_hash": user_hash,
+                        "event_type": "user_message",
+                        "reply_source": "",
+                        "rule_id": "",
+                        "model_name": "",
+                        "payload": {"text": "好的"},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+                + json.dumps(
+                    {
+                        "timestamp": "2026-02-27T10:00:02",
+                        "session_id": "chat_a",
+                        "user_id_hash": user_hash,
+                        "event_type": "assistant_reply",
+                        "reply_source": "rule",
+                        "rule_id": "DUMMY",
+                        "model_name": "",
+                        "payload": {"text": "收到", "round_media_sent_types": []},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
-            self.assertIsNone(agent.mark_reply_sent("chat_a", user_name, "好的"))
             video_item = agent.mark_reply_sent("chat_a", user_name, "继续说")
             self.assertIsNotNone(video_item)
             self.assertEqual(video_item.get("type"), "delayed_video")
             agent.mark_media_sent("chat_a", user_name, video_item, success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id="chat_a",
+                media_type="delayed_video",
+                media_path=str(temp_dir / "images" / "video.mp4"),
+                ts="2026-02-27T10:00:10",
+                user_id_hash=user_hash,
+            )
 
             d2 = agent.decide("chat_b", user_name, "我在黑龙江怎么买", [])
-            agent.mark_media_sent("chat_b", user_name, d2.media_items[0], success=True)
-            self.assertIsNone(agent.mark_reply_sent("chat_b", user_name, "再问一个问题"))
-            self.assertIsNone(agent.mark_reply_sent("chat_b", user_name, "再追问一次"))
+            self.assertEqual(d2.media_plan, "none")
+            self.assertIsNone(agent.mark_reply_sent("chat_a", user_name, "再追问一次"))
 
     def test_purchase_known_geo_contact_then_remind(self):
         with tempfile.TemporaryDirectory() as td:
@@ -255,12 +339,14 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d1.media_plan, "contact_image")
             self.assertTrue(d1.media_items)
             agent.mark_media_sent(session_id, user_name, d1.media_items[0], success=True)
+            user_hash = agent._hash_user(user_name)
             self._append_media_success_log(
                 conversations_dir=conversations_dir,
                 session_id=session_id,
                 media_type="contact_image",
                 media_path=d1.media_items[0]["path"],
                 ts="2999-01-01T00:02:00",
+                user_id_hash=user_hash,
             )
 
             d2 = agent.decide(session_id, user_name, "怎么预约", [])
@@ -305,12 +391,14 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d1.media_plan, "address_image")
             self.assertTrue(d1.media_items)
             agent.mark_media_sent(session_id, user_name, d1.media_items[0], success=True)
+            user_hash = agent._hash_user(user_name)
             self._append_media_success_log(
                 conversations_dir=conversations_dir,
                 session_id=session_id,
                 media_type="address_image",
                 media_path=d1.media_items[0]["path"],
                 ts="2026-02-27T10:20:00",
+                user_id_hash=user_hash,
             )
 
             d2 = agent.decide(session_id, user_name, "我在门头沟", [])
@@ -319,12 +407,14 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d2.media_skip_reason, "address_image_cooldown")
             self.assertFalse(d2.media_items)
 
+            (conversations_dir / f"{session_id}.jsonl").unlink(missing_ok=True)
             self._append_media_success_log(
                 conversations_dir=conversations_dir,
                 session_id=session_id,
                 media_type="address_image",
                 media_path=d1.media_items[0]["path"],
                 ts="2020-01-01T00:00:00",
+                user_id_hash=user_hash,
             )
 
             d3 = agent.decide(session_id, user_name, "我在门头沟", [])
@@ -338,27 +428,29 @@ class RuleEngineTestCase(unittest.TestCase):
             agent, _, _, _ = self._build_agent(temp_dir)
             session_id = "chat_lock"
             user_name = "用户H"
+            user_hash = agent._hash_user(user_name)
 
             self._append_media_success_log(
                 conversations_dir=conversations_dir,
                 session_id=session_id,
                 media_type="address_image",
                 media_path=str(temp_dir / "images" / "北京地址.jpg"),
-                ts="2026-02-27T10:30:00",
+                ts="2020-01-01T10:30:00",
+                user_id_hash=user_hash,
             )
             self._append_media_success_log(
                 conversations_dir=conversations_dir,
                 session_id=session_id,
                 media_type="contact_image",
                 media_path=str(temp_dir / "images" / "contact.jpg"),
-                ts="2026-02-27T10:31:00",
+                ts="2020-01-01T10:31:00",
+                user_id_hash=user_hash,
             )
 
             d = agent.decide(session_id, user_name, "我在门头沟", [])
             self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
-            self.assertEqual(d.media_plan, "none")
-            self.assertEqual(d.media_skip_reason, "both_images_already_sent")
-            self.assertFalse(d.media_items)
+            self.assertEqual(d.media_plan, "address_image")
+            self.assertTrue(d.media_items)
 
     def test_both_images_strong_intent_first_fixed_then_llm(self):
         with tempfile.TemporaryDirectory() as td:
@@ -367,6 +459,7 @@ class RuleEngineTestCase(unittest.TestCase):
             agent, _, _, llm = self._build_agent(temp_dir)
             session_id = "chat_lock_purchase"
             user_name = "用户I"
+            user_hash = agent._hash_user(user_name)
 
             self._append_media_success_log(
                 conversations_dir=conversations_dir,
@@ -374,6 +467,7 @@ class RuleEngineTestCase(unittest.TestCase):
                 media_type="address_image",
                 media_path=str(temp_dir / "images" / "北京地址.jpg"),
                 ts="2026-02-27T10:40:00",
+                user_id_hash=user_hash,
             )
             self._append_media_success_log(
                 conversations_dir=conversations_dir,
@@ -381,8 +475,8 @@ class RuleEngineTestCase(unittest.TestCase):
                 media_type="contact_image",
                 media_path=str(temp_dir / "images" / "contact.jpg"),
                 ts="2026-02-27T10:41:00",
+                user_id_hash=user_hash,
             )
-            user_hash = agent._hash_user(user_name)
             agent.memory_store.update_session_state(
                 session_id,
                 {"last_target_store": "beijing_chaoyang"},
@@ -445,6 +539,64 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertFalse(d.media_skip_reason)
             self.assertTrue(d.media_items)
 
+    def test_log_deleted_resets_video_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir, whitelist_sessions=["chat_video_reset"])
+            session_id = "chat_video_reset"
+            user_name = "用户V"
+            user_hash = agent._hash_user(user_name)
+
+            d1 = agent.decide(session_id, user_name, "我在黑龙江怎么买", [])
+            self.assertEqual(d1.media_plan, "contact_image")
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="contact_image",
+                media_path=d1.media_items[0]["path"],
+                ts="2026-02-27T10:00:00",
+                user_id_hash=user_hash,
+            )
+            (conversations_dir / f"{session_id}.jsonl").write_text(
+                (conversations_dir / f"{session_id}.jsonl").read_text(encoding="utf-8")
+                + json.dumps(
+                    {
+                        "timestamp": "2026-02-27T10:00:01",
+                        "session_id": session_id,
+                        "user_id_hash": user_hash,
+                        "event_type": "user_message",
+                        "reply_source": "",
+                        "rule_id": "",
+                        "model_name": "",
+                        "payload": {"text": "收到"},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+                + json.dumps(
+                    {
+                        "timestamp": "2026-02-27T10:00:02",
+                        "session_id": session_id,
+                        "user_id_hash": user_hash,
+                        "event_type": "assistant_reply",
+                        "reply_source": "rule",
+                        "rule_id": "DUMMY",
+                        "model_name": "",
+                        "payload": {"text": "收到", "round_media_sent_types": []},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            self.assertIsNotNone(agent.mark_reply_sent(session_id, user_name, "第二轮"))
+
+            (conversations_dir / f"{session_id}.jsonl").unlink(missing_ok=True)
+
+            d2 = agent.decide(session_id, user_name, "我在黑龙江怎么买", [])
+            self.assertEqual(d2.media_plan, "contact_image")
+
     def test_media_state_recovers_from_conversation_log(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
@@ -455,9 +607,9 @@ class RuleEngineTestCase(unittest.TestCase):
             log_file = (temp_dir / "conversations") / f"{session_id}.jsonl"
             records = [
                 {
-                    "timestamp": "2026-02-27T10:00:00",
+                    "timestamp": "2020-01-01T10:00:00",
                     "session_id": session_id,
-                    "user_id_hash": "u1",
+                    "user_id_hash": agent._hash_user(user_name),
                     "event_type": "media_attempt",
                     "reply_source": "",
                     "rule_id": "",
@@ -465,9 +617,9 @@ class RuleEngineTestCase(unittest.TestCase):
                     "payload": {"type": "address_image", "path": str(temp_dir / "images" / "北京地址.jpg")},
                 },
                 {
-                    "timestamp": "2026-02-27T10:00:01",
+                    "timestamp": "2020-01-01T10:00:01",
                     "session_id": session_id,
-                    "user_id_hash": "u1",
+                    "user_id_hash": agent._hash_user(user_name),
                     "event_type": "media_result",
                     "reply_source": "",
                     "rule_id": "",
@@ -475,9 +627,9 @@ class RuleEngineTestCase(unittest.TestCase):
                     "payload": {"type": "address_image", "success": True, "result": {"ok": True}},
                 },
                 {
-                    "timestamp": "2026-02-27T10:00:10",
+                    "timestamp": "2020-01-01T10:00:10",
                     "session_id": session_id,
-                    "user_id_hash": "u1",
+                    "user_id_hash": agent._hash_user(user_name),
                     "event_type": "media_attempt",
                     "reply_source": "",
                     "rule_id": "",
@@ -485,9 +637,9 @@ class RuleEngineTestCase(unittest.TestCase):
                     "payload": {"type": "contact_image", "path": str(temp_dir / "images" / "contact.jpg")},
                 },
                 {
-                    "timestamp": "2026-02-27T10:00:11",
+                    "timestamp": "2020-01-01T10:00:11",
                     "session_id": session_id,
-                    "user_id_hash": "u1",
+                    "user_id_hash": agent._hash_user(user_name),
                     "event_type": "media_result",
                     "reply_source": "",
                     "rule_id": "",
@@ -510,9 +662,8 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d = agent.decide(session_id, user_name, "我在门头沟", [])
             self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
-            self.assertEqual(d.media_plan, "none")
-            self.assertEqual(d.media_skip_reason, "both_images_already_sent")
-            self.assertFalse(d.media_items)
+            self.assertEqual(d.media_plan, "address_image")
+            self.assertTrue(d.media_items)
 
 
 if __name__ == "__main__":

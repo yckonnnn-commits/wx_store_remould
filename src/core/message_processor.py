@@ -255,6 +255,10 @@ class MessageProcessor(QObject):
                 "round_media_block_reason": decision.media_skip_reason,
                 "round_media_planned_types": [str(x.get("type", "")) for x in (decision.media_items or []) if isinstance(x, dict)],
                 "both_images_sent_state": bool(decision.both_images_sent_state),
+                "kb_match_score": float(decision.kb_match_score or 0.0),
+                "kb_match_question": str(decision.kb_match_question or ""),
+                "kb_match_mode": str(decision.kb_match_mode or ""),
+                "kb_confident": bool(decision.kb_confident),
             },
         )
 
@@ -295,7 +299,7 @@ class MessageProcessor(QObject):
             if extra_video:
                 media_queue.append(extra_video)
 
-            media_summary = {"sent_types": [], "failed_types": []}
+            media_summary = {"sent_types": [], "failed_types": [], "sent_details": [], "failed_details": []}
             self._send_media_queue(session_id, user_name, media_queue, decision=decision, media_summary=media_summary)
 
         self.browser.send_message(decision.reply_text, on_text_sent)
@@ -325,6 +329,7 @@ class MessageProcessor(QObject):
                         "round_media_sent": bool((media_summary or {}).get("sent_types")),
                         "round_media_sent_types": list((media_summary or {}).get("sent_types", [])),
                         "round_media_failed_types": list((media_summary or {}).get("failed_types", [])),
+                        "round_media_sent_details": list((media_summary or {}).get("sent_details", [])),
                     },
                 )
             self._reset_cycle()
@@ -348,7 +353,15 @@ class MessageProcessor(QObject):
             session_id=session_id,
             user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
             event_type="media_attempt",
-            payload={"type": media_type, "path": media_path},
+            payload={
+                "type": media_type,
+                "path": media_path,
+                "target_store": item.get("target_store", ""),
+                "store_name": item.get("store_name", ""),
+                "store_address": item.get("store_address", ""),
+                "detected_region": item.get("detected_region", ""),
+                "route_reason": item.get("route_reason", ""),
+            },
         )
 
         def on_media_sent(success, result):
@@ -356,6 +369,17 @@ class MessageProcessor(QObject):
                 self.log_message.emit(f"✅ 媒体发送成功: type={media_type}")
                 if media_summary is not None:
                     media_summary.setdefault("sent_types", []).append(media_type)
+                    media_summary.setdefault("sent_details", []).append(
+                        {
+                            "type": media_type,
+                            "path": media_path,
+                            "target_store": item.get("target_store", ""),
+                            "store_name": item.get("store_name", ""),
+                            "store_address": item.get("store_address", ""),
+                            "detected_region": item.get("detected_region", ""),
+                            "route_reason": item.get("route_reason", ""),
+                        }
+                    )
             else:
                 detail = ""
                 if isinstance(result, dict):
@@ -368,12 +392,29 @@ class MessageProcessor(QObject):
                     self.log_message.emit(f"❌ 媒体发送失败: type={media_type}")
                 if media_summary is not None:
                     media_summary.setdefault("failed_types", []).append(media_type)
+                    media_summary.setdefault("failed_details", []).append(
+                        {
+                            "type": media_type,
+                            "path": media_path,
+                            "target_store": item.get("target_store", ""),
+                            "store_name": item.get("store_name", ""),
+                            "store_address": item.get("store_address", ""),
+                            "detected_region": item.get("detected_region", ""),
+                            "route_reason": item.get("route_reason", ""),
+                        }
+                    )
             self._append_training_event(
                 session_id=session_id,
                 user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
                 event_type="media_result",
                 payload={
                     "type": media_type,
+                    "path": media_path,
+                    "target_store": item.get("target_store", ""),
+                    "store_name": item.get("store_name", ""),
+                    "store_address": item.get("store_address", ""),
+                    "detected_region": item.get("detected_region", ""),
+                    "route_reason": item.get("route_reason", ""),
                     "success": bool(success),
                     "result": result if isinstance(result, (dict, str, int, float, bool, type(None))) else str(result),
                 },

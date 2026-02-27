@@ -17,7 +17,7 @@ class MemoryStore:
     def __init__(self, file_path: Path):
         self.file_path = file_path
         self._data: Dict[str, Any] = {
-            "version": 3,
+            "version": 4,
             "updated_at": "",
             "sessions": {},
             "users": {},
@@ -38,7 +38,7 @@ class MemoryStore:
             return True
         except Exception:
             self._data = {
-                "version": 3,
+                "version": 4,
                 "updated_at": "",
                 "sessions": {},
                 "users": {},
@@ -81,6 +81,9 @@ class MemoryStore:
             "last_geo_route_reason": "unknown",
             "last_geo_updated_at": "",
             "strong_intent_after_both_count": 0,
+            "session_video_armed": False,
+            "session_video_sent": False,
+            "session_post_contact_reply_count": 0,
             "last_route_reason": "unknown",
             "last_intent": "general",
             "last_reply_goal": "解答",
@@ -166,7 +169,7 @@ class MemoryStore:
             return None
 
     def _ensure_schema(self) -> None:
-        self._data["version"] = max(int(self._data.get("version", 1) or 1), 3)
+        self._data["version"] = max(int(self._data.get("version", 1) or 1), 4)
         sessions = self._data.setdefault("sessions", {})
         users = self._data.setdefault("users", {})
         for session_id, state in list(sessions.items()):
@@ -205,6 +208,9 @@ class MemoryStore:
         state.setdefault("last_geo_route_reason", "unknown")
         state.setdefault("last_geo_updated_at", "")
         state.setdefault("strong_intent_after_both_count", 0)
+        state.setdefault("session_video_armed", False)
+        state.setdefault("session_video_sent", False)
+        state.setdefault("session_post_contact_reply_count", 0)
         state.setdefault("last_route_reason", "unknown")
         state.setdefault("last_intent", "general")
         state.setdefault("last_reply_goal", "解答")

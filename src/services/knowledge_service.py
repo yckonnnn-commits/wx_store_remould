@@ -189,34 +189,48 @@ class KnowledgeService(QObject):
         self.search_completed.emit([item.to_dict() for item in results])
         return results
 
-    def find_answer(self, user_message: str, threshold: float = 0.6) -> Optional[str]:
-        """根据用户消息查找最佳答案
-
-        Args:
-            user_message: 用户消息
-            threshold: 匹配阈值 (0-1)
-
-        Returns:
-            匹配到的答案，如果没有则返回 None
-        """
+    def find_answer_detail(self, user_message: str, threshold: float = 0.6) -> Dict[str, object]:
+        """根据用户消息查找最佳答案，并返回命中细节。"""
         query = (user_message or "").strip()
         if not query:
-            return None
+            return {
+                "matched": False,
+                "answer": "",
+                "question": "",
+                "score": 0.0,
+                "mode": "none",
+                "intent": "",
+            }
 
-        result = self.repository.find_best_match(query, threshold)
-        if result:
-            return result[0]  # 返回答案文本
+        detail = self.repository.find_best_match_detail(query, threshold)
+        if detail.get("matched"):
+            return detail
 
         normalized_query = self._normalize_for_kb(query)
         if normalized_query and normalized_query != query:
             relaxed_threshold = max(0.35, float(threshold) - 0.2)
-            result = self.repository.find_best_match(normalized_query, relaxed_threshold)
-            if result:
-                return result[0]
+            detail = self.repository.find_best_match_detail(normalized_query, relaxed_threshold)
+            if detail.get("matched"):
+                detail["mode"] = f"normalized_{detail.get('mode', 'match')}"
+                return detail
 
-        intent_fallback = self._find_answer_by_intent_hint(normalized_query or query)
-        if intent_fallback:
+        intent_fallback = self._find_answer_by_intent_hint_detail(normalized_query or query)
+        if intent_fallback.get("matched"):
             return intent_fallback
+        return {
+            "matched": False,
+            "answer": "",
+            "question": "",
+            "score": 0.0,
+            "mode": "none",
+            "intent": "",
+        }
+
+    def find_answer(self, user_message: str, threshold: float = 0.6) -> Optional[str]:
+        """根据用户消息查找最佳答案（兼容旧接口）"""
+        detail = self.find_answer_detail(user_message=user_message, threshold=threshold)
+        if detail.get("matched"):
+            return str(detail.get("answer", "") or "")
         return None
 
     def _normalize_for_kb(self, text: str) -> str:
@@ -232,10 +246,17 @@ class KnowledgeService(QObject):
         normalized = normalized.replace("是多少", "多少").replace("什么价格", "价格多少")
         return normalized
 
-    def _find_answer_by_intent_hint(self, query: str) -> Optional[str]:
+    def _find_answer_by_intent_hint_detail(self, query: str) -> Dict[str, object]:
         text = (query or "").strip()
         if not text:
-            return None
+            return {
+                "matched": False,
+                "answer": "",
+                "question": "",
+                "score": 0.0,
+                "mode": "intent_hint",
+                "intent": "",
+            }
 
         intents: List[str] = []
         if any(k in text for k in self.PRICE_KEYWORDS):
@@ -263,8 +284,22 @@ class KnowledgeService(QObject):
 
             min_score = 0.15 if intent == "general" else 0.05
             if best_item and best_item.answer and best_score >= min_score:
-                return best_item.answer
-        return None
+                return {
+                    "matched": True,
+                    "answer": best_item.answer,
+                    "question": best_item.question,
+                    "score": float(best_score),
+                    "mode": "intent_hint",
+                    "intent": intent,
+                }
+        return {
+            "matched": False,
+            "answer": "",
+            "question": "",
+            "score": 0.0,
+            "mode": "intent_hint",
+            "intent": "",
+        }
 
     def _simple_overlap_score(self, a: str, b: str) -> float:
         na = self._normalize_for_kb(a)
