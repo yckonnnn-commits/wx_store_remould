@@ -80,6 +80,7 @@ class MemoryStore:
             "last_target_store": "",
             "last_geo_route_reason": "unknown",
             "last_geo_updated_at": "",
+            "strong_intent_after_both_count": 0,
             "last_route_reason": "unknown",
             "last_intent": "general",
             "last_reply_goal": "解答",
@@ -203,6 +204,7 @@ class MemoryStore:
         state.setdefault("last_target_store", "")
         state.setdefault("last_geo_route_reason", "unknown")
         state.setdefault("last_geo_updated_at", "")
+        state.setdefault("strong_intent_after_both_count", 0)
         state.setdefault("last_route_reason", "unknown")
         state.setdefault("last_intent", "general")
         state.setdefault("last_reply_goal", "解答")

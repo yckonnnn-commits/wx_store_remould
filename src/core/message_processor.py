@@ -251,6 +251,10 @@ class MessageProcessor(QObject):
                 "rule_applied": decision.rule_applied,
                 "geo_context_source": decision.geo_context_source,
                 "media_skip_reason": decision.media_skip_reason,
+                "round_media_blocked": bool(decision.media_skip_reason),
+                "round_media_block_reason": decision.media_skip_reason,
+                "round_media_planned_types": [str(x.get("type", "")) for x in (decision.media_items or []) if isinstance(x, dict)],
+                "both_images_sent_state": bool(decision.both_images_sent_state),
             },
         )
 
@@ -285,32 +289,44 @@ class MessageProcessor(QObject):
             self.sessions.add_message(session_id, decision.reply_text, is_user=False)
             self.sessions.record_reply(session_id)
             self.reply_sent.emit(session_id, decision.reply_text)
-            self._append_training_event(
-                session_id=session_id,
-                user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
-                event_type="assistant_reply",
-                reply_source=decision.reply_source,
-                rule_id=decision.rule_id,
-                model_name=decision.llm_model,
-                payload={
-                    "text": decision.reply_text,
-                    "intent": decision.intent,
-                    "route_reason": decision.route_reason,
-                    "llm_fallback_reason": decision.llm_fallback_reason,
-                },
-            )
 
             extra_video = self.agent.mark_reply_sent(session_id, user_name, decision.reply_text)
             media_queue = list(decision.media_items)
             if extra_video:
                 media_queue.append(extra_video)
 
-            self._send_media_queue(session_id, user_name, media_queue)
+            media_summary = {"sent_types": [], "failed_types": []}
+            self._send_media_queue(session_id, user_name, media_queue, decision=decision, media_summary=media_summary)
 
         self.browser.send_message(decision.reply_text, on_text_sent)
 
-    def _send_media_queue(self, session_id: str, user_name: str, media_queue: List[Dict[str, Any]]):
+    def _send_media_queue(
+        self,
+        session_id: str,
+        user_name: str,
+        media_queue: List[Dict[str, Any]],
+        decision: Optional[AgentDecision] = None,
+        media_summary: Optional[Dict[str, List[str]]] = None,
+    ):
         if not media_queue:
+            if decision is not None:
+                self._append_training_event(
+                    session_id=session_id,
+                    user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
+                    event_type="assistant_reply",
+                    reply_source=decision.reply_source,
+                    rule_id=decision.rule_id,
+                    model_name=decision.llm_model,
+                    payload={
+                        "text": decision.reply_text,
+                        "intent": decision.intent,
+                        "route_reason": decision.route_reason,
+                        "llm_fallback_reason": decision.llm_fallback_reason,
+                        "round_media_sent": bool((media_summary or {}).get("sent_types")),
+                        "round_media_sent_types": list((media_summary or {}).get("sent_types", [])),
+                        "round_media_failed_types": list((media_summary or {}).get("failed_types", [])),
+                    },
+                )
             self._reset_cycle()
             return
 
@@ -318,7 +334,13 @@ class MessageProcessor(QObject):
         media_type = item.get("type", "unknown")
         media_path = item.get("path", "")
         if not media_path:
-            self._send_media_queue(session_id, user_name, media_queue)
+            self._send_media_queue(
+                session_id,
+                user_name,
+                media_queue,
+                decision=decision,
+                media_summary=media_summary,
+            )
             return
 
         self.log_message.emit(f"🖼️ 准备发送媒体: type={media_type}")
@@ -332,6 +354,8 @@ class MessageProcessor(QObject):
         def on_media_sent(success, result):
             if success:
                 self.log_message.emit(f"✅ 媒体发送成功: type={media_type}")
+                if media_summary is not None:
+                    media_summary.setdefault("sent_types", []).append(media_type)
             else:
                 detail = ""
                 if isinstance(result, dict):
@@ -342,6 +366,8 @@ class MessageProcessor(QObject):
                     self.log_message.emit(f"❌ 媒体发送失败: type={media_type}, detail={detail}")
                 else:
                     self.log_message.emit(f"❌ 媒体发送失败: type={media_type}")
+                if media_summary is not None:
+                    media_summary.setdefault("failed_types", []).append(media_type)
             self._append_training_event(
                 session_id=session_id,
                 user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
@@ -355,9 +381,24 @@ class MessageProcessor(QObject):
             self.agent.mark_media_sent(session_id, user_name, item, success=bool(success))
 
             if media_queue:
-                QTimer.singleShot(1200, lambda: self._send_media_queue(session_id, user_name, media_queue))
+                QTimer.singleShot(
+                    1200,
+                    lambda: self._send_media_queue(
+                        session_id,
+                        user_name,
+                        media_queue,
+                        decision=decision,
+                        media_summary=media_summary,
+                    ),
+                )
             else:
-                self._reset_cycle()
+                self._send_media_queue(
+                    session_id,
+                    user_name,
+                    media_queue,
+                    decision=decision,
+                    media_summary=media_summary,
+                )
 
         self.browser.send_image(media_path, on_media_sent)
 
