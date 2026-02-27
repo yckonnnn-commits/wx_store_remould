@@ -205,6 +205,65 @@ class RuleEngineTestCase(unittest.TestCase):
             d4 = agent.decide(session_id, user_name, "我想买", [])
             self.assertEqual(d4.rule_id, "ADDR_ASK_REGION_R1_RESET")
 
+    def test_address_detail_hook_shanghai_scope(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            d = agent.decide("chat_detail_sh", "用户地址1", "你们上海店的地址在哪", [])
+            self.assertEqual(d.rule_id, "ADDR_DETAIL_LIST_HOOK")
+            self.assertEqual(d.media_plan, "none")
+            self.assertIn("静安门店地址", d.reply_text)
+            self.assertIn("徐汇门店地址", d.reply_text)
+
+    def test_address_detail_hook_both_scope_cityless(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            d = agent.decide("chat_detail_both", "用户地址2", "具体地址在哪", [])
+            self.assertEqual(d.rule_id, "ADDR_DETAIL_LIST_HOOK")
+            self.assertEqual(d.media_plan, "none")
+            self.assertIn("上海店详细地址", d.reply_text)
+            self.assertIn("北京店详细地址", d.reply_text)
+
+    def test_address_detail_hook_second_turn_purchase_triggers_contact_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            user_name = "用户地址3"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_user_addr3",
+                user_id_hash=user_hash,
+                ts="2026-02-27T09:35:00",
+            )
+
+            d1 = agent.decide("chat_detail_followup", user_name, "具体地址在哪", [])
+            self.assertEqual(d1.rule_id, "ADDR_DETAIL_LIST_HOOK")
+            self.assertEqual(d1.media_plan, "none")
+
+            d2 = agent.decide("chat_detail_followup", user_name, "怎么预约", [])
+            self.assertEqual(d2.rule_id, "PURCHASE_CONTACT_FROM_KNOWN_GEO")
+            self.assertEqual(d2.media_plan, "contact_image")
+            self.assertTrue(d2.media_items)
+
+    def test_address_detail_hook_does_not_override_out_of_coverage(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            d = agent.decide("chat_detail_out", "用户地址4", "黑龙江门店具体地址在哪", [])
+            self.assertEqual(d.rule_id, "ADDR_OUT_OF_COVERAGE")
+            self.assertNotEqual(d.rule_id, "ADDR_DETAIL_LIST_HOOK")
+
+    def test_address_detail_hook_does_not_override_known_store_route(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            d = agent.decide("chat_detail_known", "用户地址5", "我在门头沟，地址在哪", [])
+            self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertNotEqual(d.rule_id, "ADDR_DETAIL_LIST_HOOK")
+
     def test_kb_first_then_llm(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, repository, llm = self._build_agent(Path(td))

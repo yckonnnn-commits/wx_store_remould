@@ -61,15 +61,43 @@ NEG_SHANGHAI_HINT_KEYWORDS = (
 DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "ask_region_r1": "姐姐，您在什么城市/区域呀？方便告诉我吗？我可以帮您针对性推荐门店，我们目前北京朝阳1家、上海5家（静安、人广、虹口、五角场、徐汇）🌹",
     "ask_region_r2": "姐姐，我再帮您确认一下，您现在在哪个城市或区域呀？我按距离给您匹配最近门店～🌹",
-    "ask_region_choice": "姐姐您在静安/徐汇/杨浦附近吗？不确定也没关系，告诉我个地标我也能帮您匹配～🌹",
+    "ask_region_choice": "姐姐您在上海吗？不确定也没关系，告诉我个地标我也能帮您匹配～🌹",
     "ask_region_r1_reset": "姐姐我再帮您快速确认下，您在什么城市或区域呀？我马上按距离给您匹配最近门店～🌹",
     "ask_sh_district_r1": "姐姐您在上海哪个区呀？我帮您匹配最近门店～🌹",
     "ask_sh_district_r2": "姐姐再确认下，您在上海哪个区或附近地标呢？我马上给您对门店～🌹",
     "ask_sh_district_choice": "姐姐您在静安/徐汇/杨浦附近吗？不确定也没关系，告诉我个地标我也能帮您匹配～🌹",
     "ask_sh_district_r1_reset": "姐姐我再确认下，您在上海哪个区呀？我这边马上帮您匹配最近门店～🌹",
-    "store_recommend": "姐姐，推荐您去{store_name}，我给您发一张位置图，您跟着图走会更直观～🌹",
+    "address_detail_hook_shanghai": (
+        "姐姐下面是我们的上海店地址\n"
+        "静安门店地址：静安区愚园路172号环球世界大厦A座\n"
+        "人民广场门店地址：黄埔区汉口路650号亚洲大厦\n"
+        "虹口门店地址：虹口区花园路16号嘉和国际大厦东楼\n"
+        "五角场门店地址：政通路177号，万达广场E栋C座\n"
+        "徐汇门店地址：徐汇区漕溪北路45号中航德必大厦\n"
+        "建议您来的时候一定要预约哦，否则您直接过来无法进行安排，如果你不知道如何预约，"
+        "可以直接在后面对话中跟我说，预约，就可以啦～💗"
+    ),
+    "address_detail_hook_beijing": (
+        "姐姐下面是我们的北京店地址\n"
+        "北京店详细地址：朝阳区建外SOHO东区\n"
+        "建议您来的时候一定要预约哦，否则您直接过来无法进行安排，如果你不知道如何预约，"
+        "可以直接在后面对话中跟我说，预约，就可以啦～💗"
+    ),
+    "address_detail_hook_both": (
+        "姐姐下面是我们的上海和北京店的地址\n"
+        "上海店详细地址：\n"
+        "静安门店地址：静安区愚园路172号环球世界大厦A座\n"
+        "人民广场门店地址：黄埔区汉口路650号亚洲大厦\n"
+        "虹口门店地址：虹口区花园路16号嘉和国际大厦东楼\n"
+        "五角场门店地址：政通路177号，万达广场E栋C座\n"
+        "徐汇门店地址：徐汇区漕溪北路45号中航德必大厦\n\n"
+        "北京店详细地址：朝阳区建外SOHO东区\n\n"
+        "建议您来的时候一定要预约哦，否则您直接过来无法进行安排，如果你不知道如何预约，"
+        "可以直接在后面对话中跟我说，预约，就可以啦～💗"
+    ),
+    "store_recommend": "姐姐，推荐您去{store_name}，可以看下面的红框框，您跟着图走会更直观，但是一定要预约哦～🌹",
     "non_coverage_contact": "姐姐，{region}暂时没有我们的门店，目前假发是需要根据头围和脸型进行私人定制的，您可以看看下面图中画圈圈的地方，会有专门的老师跟您远程鉴定～💗",
-    "contact_intro": "姐姐我给您发一张联系方式图，您按图添加后我这边一对一继续跟进您呀😊",
+    "contact_intro": "姐姐可以看下红框框的内容，您按图添加后我这边一对一继续跟进您呀😊",
     "purchase_contact_intro": "姐姐可以看看图中画框框的地方，会有专门的老师给您介绍～❤️",
     "purchase_contact_remind_only": "姐姐，请注意一下上面图中的圈圈位置哦，可以详细给您介绍怎么买～💗",
     "purchase_contact_remote_remind_only": "姐姐，您可以往上看看图中画圈的地方，我让老师一对一跟您远程定制❤️",
@@ -326,6 +354,7 @@ class CustomerServiceAgent:
             "PURCHASE_REMOTE_CONTACT_REMIND_ONLY",
             "ADDR_OUT_OF_COVERAGE",
             "ADDR_STORE_RECOMMEND",
+            "ADDR_DETAIL_LIST_HOOK",
             "CONTACT_SEND_IMAGE",
         }
         should_rewrite = (
@@ -582,9 +611,41 @@ class CustomerServiceAgent:
         geo_context = self._resolve_geo_context(route, session_state)
         both_images_sent = self._has_both_images_sent(session_state)
         neg_shanghai_hint = self._has_neg_shanghai_hint(text)
+        address_detail_scope = self._detect_address_detail_scope(text=text, route=route, intent=intent)
+        has_dual_city_request = ("上海" in re.sub(r"\s+", "", text)) and ("北京" in re.sub(r"\s+", "", text))
 
         if is_first_turn_global and intent == "purchase" and reason in ("unknown", "need_region"):
             return self._build_geo_followup_decision(session_state=session_state, route_reason="need_region", intent="purchase")
+
+        if (
+            address_detail_scope
+            and reason != "out_of_coverage"
+            and not (target_store != "unknown" and not has_dual_city_request)
+        ):
+            session_state["last_geo_pending"] = False
+            session_state["geo_followup_round"] = 0
+            session_state["geo_choice_offered"] = False
+            if address_detail_scope == "shanghai":
+                template_key = "address_detail_hook_shanghai"
+                session_state["last_detected_region"] = "上海"
+            elif address_detail_scope == "beijing":
+                template_key = "address_detail_hook_beijing"
+                session_state["last_detected_region"] = "北京"
+            else:
+                template_key = "address_detail_hook_both"
+                session_state["last_detected_region"] = "上海和北京"
+
+            return AgentDecision(
+                reply_text=self._render_template(template_key),
+                intent="address",
+                route_reason=f"address_detail_list:{address_detail_scope}",
+                reply_goal="解答+预约引导",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="ADDR_DETAIL_LIST_HOOK",
+                rule_applied=True,
+                geo_context_source=geo_context.get("source", ""),
+            )
 
         if reason == "shanghai_need_district":
             return self._build_geo_followup_decision(session_state=session_state, route_reason="need_district", intent="address")
@@ -1452,6 +1513,49 @@ class CustomerServiceAgent:
             return False
         return any(keyword in value for keyword in NEG_SHANGHAI_HINT_KEYWORDS)
 
+    def _detect_address_detail_scope(self, text: str, route: Dict[str, Any], intent: str) -> str:
+        if intent not in ("address", "purchase"):
+            return ""
+        if str(route.get("reason", "")) == "out_of_coverage":
+            return ""
+
+        value = re.sub(r"\s+", "", (text or ""))
+        if not value:
+            return ""
+
+        detail_keywords = (
+            "具体地址",
+            "详细地址",
+            "门店地址",
+            "店铺地址",
+            "地址在哪",
+            "地址在哪里",
+            "地址在哪儿",
+            "五家店地址",
+            "5家店地址",
+            "5家店在哪",
+            "全部门店地址",
+            "所有门店地址",
+            "各门店地址",
+        )
+        ask_detail = any(keyword in value for keyword in detail_keywords)
+        ask_city_address = (
+            ("上海" in value or "北京" in value)
+            and any(keyword in value for keyword in ("地址", "门店", "店"))
+        )
+        if not ask_detail and not ask_city_address:
+            return ""
+
+        has_shanghai = "上海" in value
+        has_beijing = "北京" in value
+        if has_shanghai and has_beijing:
+            return "both"
+        if has_shanghai:
+            return "shanghai"
+        if has_beijing:
+            return "beijing"
+        return "both"
+
     def _hash_user(self, text: str) -> str:
         return hashlib.md5((text or "unknown").encode("utf-8", errors="ignore")).hexdigest()[:10]
 
@@ -1476,9 +1580,13 @@ class CustomerServiceAgent:
         if not isinstance(template, str) or not template.strip():
             template = DEFAULT_REPLY_TEMPLATES.get(key, "")
         text = str(template or "").format_map(_SafeDict(kwargs))
-        text = " ".join(text.split())
+        if key.startswith("address_detail_hook_"):
+            lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+            text = "\n".join([line for line in lines if line])
+        else:
+            text = " ".join(text.split())
         if not text:
-            return self._render_template("general_empty") if key != "general_empty" else "姐姐我在呢🌹"
+            return self._render_template("general_empty") if key != "general_empty" else "姐姐我在呢，关于假发有什么问题您都可以问我🌹"
         return text
 
 
