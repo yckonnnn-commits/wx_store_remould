@@ -274,6 +274,7 @@ class MessageProcessor(QObject):
                 "is_first_turn_global": bool(decision.is_first_turn_global),
                 "first_turn_media_guard_applied": bool(decision.first_turn_media_guard_applied),
                 "kb_repeat_rewritten": bool(decision.kb_repeat_rewritten),
+                "purchase_both_first_hint_sent": bool(decision.purchase_both_first_hint_sent),
                 "video_trigger_user_count": int(decision.video_trigger_user_count or 0),
             },
         )
@@ -349,6 +350,7 @@ class MessageProcessor(QObject):
                         "is_first_turn_global": bool(decision.is_first_turn_global),
                         "first_turn_media_guard_applied": bool(decision.first_turn_media_guard_applied),
                         "kb_repeat_rewritten": bool(decision.kb_repeat_rewritten),
+                        "purchase_both_first_hint_sent": bool(decision.purchase_both_first_hint_sent),
                         "kb_variant_total": int(decision.kb_variant_total or 0),
                         "kb_variant_selected_index": int(
                             decision.kb_variant_selected_index

@@ -140,6 +140,7 @@ class DummyAgentFlow:
             is_first_turn_global=True,
             first_turn_media_guard_applied=False,
             kb_repeat_rewritten=True,
+            purchase_both_first_hint_sent=True,
             video_trigger_user_count=2,
         )
 
@@ -259,9 +260,11 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             self.assertIn("is_first_turn_global", decision_payload)
             self.assertIn("first_turn_media_guard_applied", decision_payload)
             self.assertIn("kb_repeat_rewritten", decision_payload)
+            self.assertIn("purchase_both_first_hint_sent", decision_payload)
             self.assertIn("video_trigger_user_count", decision_payload)
             self.assertTrue(decision_payload.get("kb_blocked_by_polite_guard"))
             self.assertEqual(decision_payload.get("kb_polite_guard_reason"), "polite_mixed_query")
+            self.assertTrue(decision_payload.get("purchase_both_first_hint_sent"))
 
             assistant_payload = assistant_events[-1].get("payload", {})
             self.assertIn("round_media_sent", assistant_payload)
@@ -271,12 +274,14 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             self.assertIn("is_first_turn_global", assistant_payload)
             self.assertIn("first_turn_media_guard_applied", assistant_payload)
             self.assertIn("kb_repeat_rewritten", assistant_payload)
+            self.assertIn("purchase_both_first_hint_sent", assistant_payload)
             self.assertIn("kb_variant_total", assistant_payload)
             self.assertIn("kb_variant_selected_index", assistant_payload)
             self.assertIn("kb_variant_fallback_llm", assistant_payload)
             self.assertTrue(assistant_payload.get("round_media_sent"))
             self.assertIn("contact_image", assistant_payload.get("round_media_sent_types", []))
             self.assertTrue(assistant_payload.get("round_media_sent_details"))
+            self.assertTrue(assistant_payload.get("purchase_both_first_hint_sent"))
 
             media_attempt_events = [x for x in lines if x.get("event_type") == "media_attempt"]
             media_result_events = [x for x in lines if x.get("event_type") == "media_result"]

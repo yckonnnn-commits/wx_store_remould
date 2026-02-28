@@ -949,6 +949,72 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertIn(d2.reply_source, ("llm", "knowledge"))
             self.assertEqual(d2.media_plan, "none")
 
+    def test_both_images_first_hint_ignores_legacy_strong_count_and_second_hits_kb(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            session_id = "chat_lock_purchase_legacy_count"
+            user_name = "用户Legacy"
+            user_hash = agent._hash_user(user_name)
+
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_user_legacy",
+                user_id_hash=user_hash,
+                ts="2026-02-27T10:39:00",
+            )
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="address_image",
+                media_path=str(temp_dir / "images" / "北京地址.jpg"),
+                ts="2026-02-27T10:40:00",
+                user_id_hash=user_hash,
+            )
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="contact_image",
+                media_path=str(temp_dir / "images" / "contact.jpg"),
+                ts="2026-02-27T10:41:00",
+                user_id_hash=user_hash,
+            )
+            agent.memory_store.update_session_state(
+                session_id,
+                {
+                    "last_target_store": "beijing_chaoyang",
+                    "strong_intent_after_both_count": 18,
+                    "purchase_both_first_hint_sent": False,
+                },
+                user_hash=user_hash,
+            )
+            repository.add(
+                "怎么预约",
+                "结论先说：可以预约到店，我现在就帮您安排。",
+                answers=[
+                    "结论先说：可以预约到店，我现在就帮您安排。",
+                    "可以预约的姐姐，您告诉我方便时间我来登记。",
+                    "您这边可以直接预约到店，我帮您对接门店时间。",
+                    "没问题，预约到店这边可以安排，您说下时间偏好。",
+                    "支持预约到店，我这边马上给您走预约流程。",
+                ],
+                intent="purchase",
+                tags=["预约"],
+            )
+
+            d1 = agent.decide(session_id, user_name, "怎么预约", [])
+            self.assertEqual(d1.rule_id, "PURCHASE_AFTER_BOTH_FIRST_HINT")
+            self.assertTrue(d1.purchase_both_first_hint_sent)
+            self.assertEqual(d1.media_plan, "none")
+            self.assertIn("画圈圈", d1.reply_text)
+
+            d2 = agent.decide(session_id, user_name, "怎么预约", [])
+            self.assertEqual(d2.reply_source, "knowledge")
+            self.assertEqual(d2.rule_id, "KB_MATCH")
+            self.assertEqual(d2.media_plan, "none")
+            self.assertFalse(d2.kb_variant_fallback_llm)
+
     def test_repeat_rewrite_fallback_to_pool(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, llm = self._build_agent(Path(td))

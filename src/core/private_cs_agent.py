@@ -126,6 +126,7 @@ class AgentDecision:
     is_first_turn_global: bool = False
     first_turn_media_guard_applied: bool = False
     kb_repeat_rewritten: bool = False
+    purchase_both_first_hint_sent: bool = False
     video_trigger_user_count: int = 0
 
 
@@ -360,6 +361,9 @@ class CustomerServiceAgent:
         else:
             knowledge_reply_count = int(session_state.get("knowledge_reply_count", 0) or 0)
 
+        decision.purchase_both_first_hint_sent = bool(
+            session_state.get("purchase_both_first_hint_sent", False)
+        )
         decision.is_first_turn_global = bool(is_first_turn_global)
         both_images_sent = self._has_both_images_sent(session_state)
         decision.both_images_sent_state = both_images_sent
@@ -695,7 +699,9 @@ class CustomerServiceAgent:
         if intent == "purchase" and reason != "shanghai_need_district" and geo_context.get("known") and both_images_sent:
             strong_count = int(session_state.get("strong_intent_after_both_count", 0) or 0)
             session_state["strong_intent_after_both_count"] = strong_count + 1
-            if strong_count == 0:
+            hint_sent = bool(session_state.get("purchase_both_first_hint_sent", False))
+            if not hint_sent:
+                session_state["purchase_both_first_hint_sent"] = True
                 return AgentDecision(
                     reply_text=self._render_template("strong_intent_after_both_first"),
                     intent="purchase",
@@ -707,6 +713,7 @@ class CustomerServiceAgent:
                     rule_applied=True,
                     geo_context_source=geo_context.get("source", ""),
                     both_images_sent_state=True,
+                    purchase_both_first_hint_sent=True,
                 )
 
             follow_decision = self._decide_general_reply(
@@ -720,6 +727,9 @@ class CustomerServiceAgent:
             follow_decision.media_plan = "none"
             follow_decision.geo_context_source = geo_context.get("source", "")
             follow_decision.both_images_sent_state = True
+            follow_decision.purchase_both_first_hint_sent = bool(
+                session_state.get("purchase_both_first_hint_sent", False)
+            )
             return follow_decision
 
         if intent == "purchase" and reason != "shanghai_need_district" and geo_context.get("known"):

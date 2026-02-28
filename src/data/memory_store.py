@@ -81,6 +81,7 @@ class MemoryStore:
             "last_geo_route_reason": "unknown",
             "last_geo_updated_at": "",
             "strong_intent_after_both_count": 0,
+            "purchase_both_first_hint_sent": False,
             "session_video_armed": False,
             "session_video_sent": False,
             "session_post_contact_reply_count": 0,
@@ -208,6 +209,7 @@ class MemoryStore:
         state.setdefault("last_geo_route_reason", "unknown")
         state.setdefault("last_geo_updated_at", "")
         state.setdefault("strong_intent_after_both_count", 0)
+        state.setdefault("purchase_both_first_hint_sent", False)
         state.setdefault("session_video_armed", False)
         state.setdefault("session_video_sent", False)
         state.setdefault("session_post_contact_reply_count", 0)
