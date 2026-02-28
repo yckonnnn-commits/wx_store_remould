@@ -583,7 +583,14 @@ class KnowledgeService(QObject):
         # 兜底：识别常见地名后缀，如“XX省/XX市/XX区/XX县/XX州”
         m = re.search(r"([\u4e00-\u9fa5]{2,8}(?:省|市|区|县|州|盟|旗))", text)
         if m:
-            return m.group(1)
+            candidate = m.group(1)
+            # 避免把“区别/区分”等词误判成地区（如“不同价格有什么区别”）。
+            tail = text[m.end():m.end() + 1]
+            if candidate.endswith("区") and tail in ("别", "分"):
+                return ""
+            if any(token in candidate for token in ("什么区", "哪个区", "哪些区")):
+                return ""
+            return candidate
         return ""
 
     def add_item(

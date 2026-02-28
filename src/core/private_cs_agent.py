@@ -65,6 +65,7 @@ SHIPPING_BLOCK_KEYWORDS = (
 )
 SHIPPING_BLOCK_REPLACEMENT = "姐姐我们是到店定制哦"
 DEFAULT_REPLY_EMOJI = "🌹"
+ENTERPRISE_GUARD_DOC_PATH = Path("docs") / "llm_enterprise_knowledge_guard_v1.md"
 
 
 DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
@@ -159,6 +160,7 @@ class CustomerServiceAgent:
         self.image_categories_path = image_categories_path
         self.system_prompt_doc_path = system_prompt_doc_path
         self.playbook_doc_path = playbook_doc_path
+        self.enterprise_guard_doc_path = ENTERPRISE_GUARD_DOC_PATH
         self.reply_templates_path = reply_templates_path or (Path("config") / "reply_templates.json")
         self.media_whitelist_path = media_whitelist_path or (Path("config") / "media_whitelist.json")
         self.conversation_log_dir = conversation_log_dir or (Path("data") / "conversations")
@@ -180,6 +182,7 @@ class CustomerServiceAgent:
 
         self._system_prompt_doc_text = ""
         self._playbook_doc_text = ""
+        self._enterprise_guard_doc_text = ""
         self._reply_templates: Dict[str, Any] = dict(DEFAULT_REPLY_TEMPLATES)
         self._media_whitelist_sessions: set[str] = set()
 
@@ -193,6 +196,7 @@ class CustomerServiceAgent:
         """重载 system prompt 与 playbook 文档"""
         self._system_prompt_doc_text = self._read_text(self.system_prompt_doc_path)
         self._playbook_doc_text = self._read_text(self.playbook_doc_path)
+        self._enterprise_guard_doc_text = self._read_text(self.enterprise_guard_doc_path)
         return bool(self._system_prompt_doc_text)
 
     def reload_media_library(self) -> None:
@@ -1552,16 +1556,18 @@ class CustomerServiceAgent:
         return session_id in self._media_whitelist_sessions
 
     def _build_general_llm_prompt(self, latest_user_text: str) -> str:
-        kb_examples = self._top_kb_examples(latest_user_text, limit=3)
-        kb_block = "\n".join([f"- 问：{q}\n  答：{a}" for q, a in kb_examples])
+        kb_examples = self._top_kb_examples(latest_user_text, limit=2)
+        kb_block = "\n".join([f"- 问：{q}\n  答：{a}" for q, a in kb_examples]) or "（当前无高相关知识库样例）"
+        enterprise_guard = self._enterprise_guard_doc_text or "（企业知识约束文档缺失，请按已有品牌口径稳妥回复）"
 
         return (
             "你是艾耐儿私域客服助手。\n"
             "你只负责补充规则外的一般问答，不做任何地址/媒体/流程决策。\n"
-            "语气要自然、亲切、专业，面向中老年假发咨询场景。\n"
-            "回复要求：先给明确结论，再补充一句解释；必须是完整句，禁止残句；不要编造价格活动，不要输出联系方式信息。\n\n"
-            f"【品牌系统提示词参考】\n{self._system_prompt_doc_text}\n\n"
-            f"【客服话术参考】\n{self._playbook_doc_text}\n\n"
+            "语气自然、亲切、像真人客服。\n"
+            "硬规则：结论先行；尽量1句话完成回复，且必须是完整句；末尾只保留1个emoji表情。\n"
+            "超出知识库可常规发挥，但必须围绕企业知识口径；禁止编造活动承诺、联系方式或超出事实的信息。\n"
+            "若信息不确定，给稳妥结论并引导用户补充。\n\n"
+            f"【企业知识约束】\n{enterprise_guard}\n\n"
             f"【知识库参考】\n{kb_block}\n\n"
             "仅输出最终客服话术纯文本，不要输出JSON、代码块或解释。"
         )
@@ -1683,4 +1689,12 @@ def route_region(route_reason: str, text: str) -> str:
     if route_reason != "out_of_coverage":
         return ""
     m = re.search(r"([\u4e00-\u9fa5]{2,8}(?:省|市|区|县|州|盟|旗))", text or "")
-    return m.group(1) if m else ""
+    if not m:
+        return ""
+    candidate = m.group(1)
+    tail = (text or "")[m.end():m.end() + 1]
+    if candidate.endswith("区") and tail in ("别", "分"):
+        return ""
+    if any(token in candidate for token in ("什么区", "哪个区", "哪些区")):
+        return ""
+    return candidate

@@ -28,6 +28,21 @@ pip install -r requirements.txt
 python3 main.py
 ```
 
+## 快速联调（不走微信）
+
+```bash
+# 单条消息：只看策略命中和回复
+python3 scripts/chat_simulator.py -m "不同价格有什么区别啊？" --no-llm
+
+# 交互模式：连续多轮测试（输入 /exit 退出）
+python3 scripts/chat_simulator.py --no-llm
+```
+
+- 输出会包含：`reply_source / intent / route_reason / rule_id / media_plan / reply_text`
+- 还会输出本轮触发摘要：`视频=是/否 | 地址图片=是/否 | 联系方式图片=是/否`
+- 默认使用独立调试数据目录：`data/simulator`，不会污染正式会话记忆
+- 去掉 `--no-llm` 可切到真实模型回复（需已配置 API Key）
+
 ## UI 页面
 
 - 微信小店

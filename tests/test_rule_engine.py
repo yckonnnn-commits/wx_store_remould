@@ -188,6 +188,9 @@ class RuleEngineTestCase(unittest.TestCase):
             non_cov_route = service.resolve_store_recommendation("我在黑龙江")
             self.assertEqual(non_cov_route.get("reason"), "out_of_coverage")
 
+            normal_price_route = service.resolve_store_recommendation("不同价格有什么区别啊？")
+            self.assertEqual(normal_price_route.get("reason"), "unknown")
+
     def test_geo_followup_cycle_two_plus_one(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, _ = self._build_agent(Path(td))
