@@ -197,6 +197,7 @@ class KnowledgeService(QObject):
             return {
                 "matched": False,
                 "answer": "",
+                "answers": [],
                 "question": "",
                 "score": 0.0,
                 "mode": "none",
@@ -253,6 +254,7 @@ class KnowledgeService(QObject):
         return {
             "matched": False,
             "answer": "",
+            "answers": [],
             "question": "",
             "score": 0.0,
             "mode": "none",
@@ -289,6 +291,7 @@ class KnowledgeService(QObject):
             return {
                 "matched": False,
                 "answer": "",
+                "answers": [],
                 "question": "",
                 "score": 0.0,
                 "mode": "intent_hint",
@@ -339,6 +342,7 @@ class KnowledgeService(QObject):
                 return {
                     "matched": True,
                     "answer": best_item.answer,
+                    "answers": list(best_item.answers or ([best_item.answer] if best_item.answer else [])),
                     "question": best_item.question,
                     "score": float(best_score),
                     "mode": "intent_hint",
@@ -351,6 +355,7 @@ class KnowledgeService(QObject):
         return {
             "matched": False,
             "answer": "",
+            "answers": [],
             "question": "",
             "score": 0.0,
             "mode": "intent_hint",
@@ -433,6 +438,7 @@ class KnowledgeService(QObject):
         blocked_detail = {
             "matched": False,
             "answer": "",
+            "answers": [],
             "question": "",
             "score": 0.0,
             "mode": "none",
@@ -580,25 +586,47 @@ class KnowledgeService(QObject):
             return m.group(1)
         return ""
 
-    def add_item(self, question: str, answer: str, intent: str = "", tags: Optional[List[str]] = None,
-                 category: Optional[str] = None) -> Optional[str]:
+    def add_item(
+        self,
+        question: str,
+        answer: str,
+        intent: str = "",
+        tags: Optional[List[str]] = None,
+        category: Optional[str] = None,
+        answers: Optional[List[str]] = None,
+    ) -> Optional[str]:
         """添加知识库条目
 
         Returns:
             新条目的ID，失败返回None
         """
-        if not question or not answer:
+        if not question or (not answer and not answers):
             return None
 
-        item = self.repository.add(question, answer, intent=intent, tags=tags, category=category)
+        item = self.repository.add(question, answer, intent=intent, tags=tags, category=category, answers=answers)
         self.item_added.emit(item.id)
         return item.id
 
-    def update_item(self, item_id: str, question: str = None, answer: str = None,
-                    intent: str = None, tags: Optional[List[str]] = None,
-                    category: Optional[str] = None) -> bool:
+    def update_item(
+        self,
+        item_id: str,
+        question: str = None,
+        answer: str = None,
+        intent: str = None,
+        tags: Optional[List[str]] = None,
+        category: Optional[str] = None,
+        answers: Optional[List[str]] = None,
+    ) -> bool:
         """更新知识库条目"""
-        success = self.repository.update(item_id, question, answer, intent=intent, tags=tags, category=category)
+        success = self.repository.update(
+            item_id,
+            question,
+            answer,
+            intent=intent,
+            tags=tags,
+            category=category,
+            answers=answers,
+        )
         if success:
             self.item_updated.emit(item_id)
         return success

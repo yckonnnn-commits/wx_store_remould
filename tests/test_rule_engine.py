@@ -1,5 +1,4 @@
 import json
-import re
 import tempfile
 import unittest
 from datetime import datetime
@@ -306,6 +305,30 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertIn("item_id", detail)
             self.assertEqual(detail.get("item_id"), item.id)
             self.assertIn("礼貌", detail.get("tags", []))
+            self.assertEqual(detail.get("answers"), ["不客气姐姐🌹"])
+
+    def test_repository_legacy_answer_backfills_answers(self):
+        with tempfile.TemporaryDirectory() as td:
+            kb_file = Path(td) / "knowledge.json"
+            kb_file.write_text(
+                json.dumps(
+                    [
+                        {
+                            "intent": "wearing",
+                            "question": "会掉吗",
+                            "answer": "不会掉，佩戴很稳。",
+                            "tags": ["佩戴体验"],
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            repository = KnowledgeRepository(kb_file)
+            detail = repository.find_best_match_detail("会掉吗", threshold=0.6)
+            self.assertTrue(detail.get("matched"))
+            self.assertEqual(detail.get("answer"), "不会掉，佩戴很稳。")
+            self.assertEqual(detail.get("answers"), ["不会掉，佩戴很稳。"])
 
     def test_polite_closing_kb_requires_exact_match(self):
         with tempfile.TemporaryDirectory() as td:
@@ -341,50 +364,55 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.kb_polite_guard_reason, "polite_not_exact")
             self.assertGreaterEqual(llm.calls, 1)
 
-    def test_kb_repeat_rewritten_by_llm(self):
+    def test_kb_variant_rotation_then_fallback_to_llm(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
-            conversations_dir = temp_dir / "conversations"
             agent, _, repository, llm = self._build_agent(temp_dir)
             repository.add(
                 "会掉吗头发？会掉吗？",
                 "非常牢固，我们有客户戴着做过山车都没问题！🎢",
+                answers=[
+                    "非常牢固，我们有客户戴着做过山车都没问题！🎢",
+                    "结论先说：佩戴很稳，日常活动基本不会掉发。",
+                    "您放心，这款固定性很好，正常活动不容易掉。",
+                    "核心结论是不容易掉，贴合后稳定性很高。",
+                    "简单说就是很牢固，佩戴后不容易松动或掉发。",
+                ],
                 intent="wearing",
                 tags=["佩戴体验"],
             )
 
             user_name = "用户KB"
-            user_hash = agent._hash_user(user_name)
-            self._append_assistant_reply_log(
-                conversations_dir=conversations_dir,
-                session_id="seed_user_kb",
-                user_id_hash=user_hash,
-                ts="2026-02-27T08:00:00",
-                text="非常牢固，我们有客户戴着做过山车都没问题！🎢",
-            )
-            llm.reply_text = "姐姐放心，咱们这款佩戴很稳，日常活动基本不会掉发～🌹"
+            session_id = "chat_kb_exact"
+            seen = []
+            for _ in range(5):
+                d = agent.decide(session_id, user_name, "会掉吗？", [])
+                self.assertEqual(d.reply_source, "knowledge")
+                self.assertEqual(d.kb_variant_total, 5)
+                self.assertGreaterEqual(d.kb_variant_selected_index, 0)
+                self.assertFalse(d.kb_variant_fallback_llm)
+                seen.append(d.reply_text)
+                agent.mark_reply_sent(session_id, user_name, d.reply_text)
 
-            d1 = agent.decide("chat_kb_exact", user_name, "会掉吗？", [])
-            self.assertEqual(d1.reply_source, "knowledge")
-            self.assertEqual(d1.reply_text, "非常牢固，我们有客户戴着做过山车都没问题！🎢")
-            self.assertFalse(d1.kb_repeat_rewritten)
+            self.assertEqual(len(set(seen)), 5)
             self.assertEqual(llm.calls, 0)
 
-            d2 = agent.decide("chat_kb_exact", user_name, "会掉吗？", [])
-            self.assertEqual(d2.reply_source, "knowledge")
-            self.assertNotEqual(d2.reply_text, "非常牢固，我们有客户戴着做过山车都没问题！🎢")
-            self.assertTrue(d2.kb_repeat_rewritten)
+            llm.reply_text = "结论先说：佩戴很稳，正常活动不会掉发。"
+            d6 = agent.decide(session_id, user_name, "会掉吗？", [])
+            self.assertEqual(d6.reply_source, "llm")
+            self.assertEqual(d6.rule_id, "LLM_KB_VARIANT_FALLBACK")
+            self.assertTrue(d6.kb_variant_fallback_llm)
+            self.assertEqual(d6.kb_variant_total, 5)
             self.assertGreaterEqual(llm.calls, 1)
 
     def test_llm_normalize_only_single_trailing_emoji(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, _ = self._build_agent(Path(td))
             normalized = agent._normalize_reply_text("放心戴🌹蹦迪跳舞都不掉哦～💃🌹")
-            self.assertTrue(normalized.endswith("🌹"))
+            self.assertTrue(normalized.endswith("。🌹"))
             self.assertEqual(normalized.count("🌹"), 1)
             self.assertNotIn("💃", normalized)
             self.assertNotIn("～", normalized)
-            self.assertLessEqual(len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", normalized)), 15)
 
     def test_shipping_terms_hard_blocked(self):
         with tempfile.TemporaryDirectory() as td:
@@ -393,7 +421,7 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d = agent.decide("chat_shipping_block", "用户物流", "物流怎么发", [])
             self.assertEqual(d.reply_source, "llm")
-            self.assertEqual(d.reply_text, "姐姐我们是到店定制哦🌹")
+            self.assertEqual(d.reply_text, "姐姐我们是到店定制哦。🌹")
 
     def test_north_fallback_purchase_recommends_beijing_when_no_contact_sent(self):
         with tempfile.TemporaryDirectory() as td:

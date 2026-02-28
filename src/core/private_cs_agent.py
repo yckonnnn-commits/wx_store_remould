@@ -116,6 +116,10 @@ class AgentDecision:
     kb_match_score: float = 0.0
     kb_match_question: str = ""
     kb_match_mode: str = ""
+    kb_item_id: str = ""
+    kb_variant_total: int = 0
+    kb_variant_selected_index: int = -1
+    kb_variant_fallback_llm: bool = False
     kb_confident: bool = False
     kb_blocked_by_polite_guard: bool = False
     kb_polite_guard_reason: str = ""
@@ -327,6 +331,7 @@ class CustomerServiceAgent:
                 conversation_history=conversation_history or [],
                 session_state=session_state,
                 user_state=user_state,
+                user_id_hash=user_hash,
             )
 
         copy_lock_rule_ids = {
@@ -337,15 +342,13 @@ class CustomerServiceAgent:
             "ADDR_STORE_RECOMMEND",
             "CONTACT_SEND_IMAGE",
         }
-        knowledge_reply_count = int(session_state.get("knowledge_reply_count", 0) or 0)
-        knowledge_first_hit = decision.reply_source == "knowledge" and knowledge_reply_count <= 0
         should_rewrite = (
-            decision.reply_source in ("llm", "fallback", "knowledge")
+            decision.reply_source in ("llm", "fallback")
             and decision.rule_id not in copy_lock_rule_ids
-            and not knowledge_first_hit
         )
         if should_rewrite:
-            rewritten_text, rewritten = self._rewrite_if_repeated(
+            knowledge_reply_count = int(session_state.get("knowledge_reply_count", 0) or 0)
+            rewritten_text, _ = self._rewrite_if_repeated(
                 reply_text=decision.reply_text,
                 latest_user_text=text,
                 conversation_history=conversation_history or [],
@@ -353,7 +356,9 @@ class CustomerServiceAgent:
                 user_id_hash=user_hash,
             )
             decision.reply_text = rewritten_text
-            decision.kb_repeat_rewritten = bool(rewritten and decision.reply_source == "knowledge")
+            decision.kb_repeat_rewritten = False
+        else:
+            knowledge_reply_count = int(session_state.get("knowledge_reply_count", 0) or 0)
 
         decision.is_first_turn_global = bool(is_first_turn_global)
         both_images_sent = self._has_both_images_sent(session_state)
@@ -816,6 +821,7 @@ class CustomerServiceAgent:
         conversation_history: List[Dict[str, str]],
         session_state: Dict[str, Any],
         user_state: Dict[str, Any],
+        user_id_hash: str = "",
     ) -> AgentDecision:
         route_reason = route.get("reason", "unknown")
         contact_sent = int(session_state.get("contact_image_sent_count", 0) or 0) >= 1
@@ -858,27 +864,98 @@ class CustomerServiceAgent:
             kb_polite_guard_reason = str(kb_detail.get("polite_guard_reason", "") or "")
             if kb_detail.get("matched"):
                 kb_answer = str(kb_detail.get("answer", "") or "").strip()
-                return AgentDecision(
-                    reply_text=kb_answer,
-                    intent=intent,
-                    route_reason=route_reason,
-                    reply_goal="解答",
-                    media_plan="none",
-                    reply_source="knowledge",
-                    rule_id="KB_MATCH",
-                    rule_applied=False,
-                    kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
-                    kb_match_question=str(kb_detail.get("question", "") or ""),
-                    kb_match_mode=str(kb_detail.get("mode", "") or ""),
-                    kb_confident=True,
-                    kb_blocked_by_polite_guard=False,
-                    kb_polite_guard_reason="",
-                )
+                kb_answers = [
+                    str(x).strip()
+                    for x in (kb_detail.get("answers", []) or [])
+                    if str(x).strip()
+                ]
+                if kb_answer and kb_answer not in kb_answers:
+                    kb_answers.insert(0, kb_answer)
 
+                selected_answer, selected_index, exhausted = self._select_kb_variant_answer(
+                    answers=kb_answers,
+                    user_state=user_state,
+                    user_id_hash=user_id_hash,
+                )
+                if selected_answer:
+                    return AgentDecision(
+                        reply_text=selected_answer,
+                        intent=intent,
+                        route_reason=route_reason,
+                        reply_goal="解答",
+                        media_plan="none",
+                        reply_source="knowledge",
+                        rule_id="KB_MATCH",
+                        rule_applied=False,
+                        kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
+                        kb_match_question=str(kb_detail.get("question", "") or ""),
+                        kb_match_mode=str(kb_detail.get("mode", "") or ""),
+                        kb_item_id=str(kb_detail.get("item_id", "") or ""),
+                        kb_variant_total=len(kb_answers),
+                        kb_variant_selected_index=selected_index,
+                        kb_variant_fallback_llm=False,
+                        kb_confident=True,
+                        kb_blocked_by_polite_guard=False,
+                        kb_polite_guard_reason="",
+                    )
+
+                if exhausted:
+                    rewrite_prompt = self._build_kb_variant_fallback_prompt(
+                        latest_user_text=latest_user_text,
+                        kb_question=str(kb_detail.get("question", "") or ""),
+                        kb_answer=kb_answer or (kb_answers[0] if kb_answers else ""),
+                    )
+                    return self._decide_llm_reply(
+                        latest_user_text=latest_user_text,
+                        intent=intent,
+                        route_reason=route_reason,
+                        conversation_history=conversation_history,
+                        kb_blocked_by_polite_guard=False,
+                        kb_polite_guard_reason="",
+                        user_message_override=rewrite_prompt,
+                        rule_id="LLM_KB_VARIANT_FALLBACK",
+                        kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
+                        kb_match_question=str(kb_detail.get("question", "") or ""),
+                        kb_match_mode=str(kb_detail.get("mode", "") or ""),
+                        kb_item_id=str(kb_detail.get("item_id", "") or ""),
+                        kb_variant_total=len(kb_answers),
+                        kb_variant_selected_index=-1,
+                        kb_variant_fallback_llm=True,
+                        kb_confident=True,
+                    )
+
+        return self._decide_llm_reply(
+            latest_user_text=latest_user_text,
+            intent=intent,
+            route_reason=route_reason,
+            conversation_history=conversation_history,
+            kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
+            kb_polite_guard_reason=kb_polite_guard_reason,
+        )
+
+    def _decide_llm_reply(
+        self,
+        latest_user_text: str,
+        intent: str,
+        route_reason: str,
+        conversation_history: List[Dict[str, str]],
+        kb_blocked_by_polite_guard: bool = False,
+        kb_polite_guard_reason: str = "",
+        user_message_override: str = "",
+        rule_id: str = "LLM_GENERAL",
+        kb_match_score: float = 0.0,
+        kb_match_question: str = "",
+        kb_match_mode: str = "",
+        kb_item_id: str = "",
+        kb_variant_total: int = 0,
+        kb_variant_selected_index: int = -1,
+        kb_variant_fallback_llm: bool = False,
+        kb_confident: bool = False,
+    ) -> AgentDecision:
         composed_prompt = self._build_general_llm_prompt(latest_user_text)
         self.llm_service.set_system_prompt(composed_prompt)
         success, result = self.llm_service.generate_reply_sync(
-            user_message=latest_user_text,
+            user_message=user_message_override or latest_user_text,
             conversation_history=conversation_history,
         )
         model_name = self.llm_service.get_current_model_name()
@@ -894,6 +971,14 @@ class CustomerServiceAgent:
                 rule_applied=False,
                 llm_model=model_name,
                 llm_fallback_reason=str(result or ""),
+                kb_match_score=kb_match_score,
+                kb_match_question=kb_match_question,
+                kb_match_mode=kb_match_mode,
+                kb_item_id=kb_item_id,
+                kb_variant_total=kb_variant_total,
+                kb_variant_selected_index=kb_variant_selected_index,
+                kb_variant_fallback_llm=kb_variant_fallback_llm,
+                kb_confident=kb_confident,
                 kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
                 kb_polite_guard_reason=kb_polite_guard_reason,
             )
@@ -907,11 +992,56 @@ class CustomerServiceAgent:
             reply_goal="解答",
             media_plan="none",
             reply_source="llm",
-            rule_id="LLM_GENERAL",
+            rule_id=rule_id,
             rule_applied=False,
             llm_model=model_name,
+            kb_match_score=kb_match_score,
+            kb_match_question=kb_match_question,
+            kb_match_mode=kb_match_mode,
+            kb_item_id=kb_item_id,
+            kb_variant_total=kb_variant_total,
+            kb_variant_selected_index=kb_variant_selected_index,
+            kb_variant_fallback_llm=kb_variant_fallback_llm,
+            kb_confident=kb_confident,
             kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
             kb_polite_guard_reason=kb_polite_guard_reason,
+        )
+
+    def _select_kb_variant_answer(
+        self,
+        answers: List[str],
+        user_state: Dict[str, Any],
+        user_id_hash: str = "",
+    ) -> Tuple[str, int, bool]:
+        candidates: List[str] = []
+        seen: set[str] = set()
+        for raw in answers or []:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            norm = self._normalize_for_dedupe(text)
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            candidates.append(text)
+            if len(candidates) >= 5:
+                break
+        if not candidates:
+            return "", -1, False
+
+        previous = self.summarize_recent_assistant_hashes_from_logs(user_id_hash=user_id_hash, limit=80)
+        previous |= set(user_state.get("recent_reply_hashes", []) or [])
+        for idx, candidate in enumerate(candidates):
+            if self._normalize_for_dedupe(candidate) not in previous:
+                return candidate, idx, False
+        return "", -1, True
+
+    def _build_kb_variant_fallback_prompt(self, latest_user_text: str, kb_question: str, kb_answer: str) -> str:
+        return (
+            f"用户刚问：{latest_user_text}\n"
+            f"命中的知识库问题：{kb_question}\n"
+            f"核心结论：{kb_answer}\n"
+            "请保持核心结论不变，改写成结论先行、完整自然的客服回复。"
         )
 
     def _rewrite_if_repeated(
@@ -1419,7 +1549,7 @@ class CustomerServiceAgent:
             "你是艾耐儿私域客服助手。\n"
             "你只负责补充规则外的一般问答，不做任何地址/媒体/流程决策。\n"
             "语气要自然、亲切、专业，面向中老年假发咨询场景。\n"
-            "回复要求：1-2句中文，简洁，不要编造价格活动，不要输出联系方式信息。\n\n"
+            "回复要求：先给明确结论，再补充一句解释；必须是完整句，禁止残句；不要编造价格活动，不要输出联系方式信息。\n\n"
             f"【品牌系统提示词参考】\n{self._system_prompt_doc_text}\n\n"
             f"【客服话术参考】\n{self._playbook_doc_text}\n\n"
             f"【知识库参考】\n{kb_block}\n\n"
@@ -1473,15 +1603,11 @@ class CustomerServiceAgent:
         elif any(k in value for k in SHIPPING_BLOCK_KEYWORDS):
             value = SHIPPING_BLOCK_REPLACEMENT
 
-        if len(value) > 130:
-            value = value[:130].rstrip() + "..."
-
-        # 只保留一个句尾 emoji，避免“句中 emoji + 句尾 emoji”叠加。
-        value = value.rstrip("。！？!?；;，, ")
         if not value:
             value = "姐姐我在呢"
-        value = self._truncate_by_effective_chars(value, 15) or "姐姐我在呢"
-
+        value = value.rstrip("，,；; ")
+        if not re.search(r"[。！？!?]$", value):
+            value = f"{value}。"
         return f"{value}{DEFAULT_REPLY_EMOJI}"
 
     def _strip_inline_emoji_symbols(self, text: str) -> str:
@@ -1491,23 +1617,6 @@ class CustomerServiceAgent:
             text or "",
         )
         return re.sub(r"[~～]+", "", cleaned)
-
-    def _truncate_by_effective_chars(self, text: str, max_effective_chars: int) -> str:
-        if max_effective_chars <= 0:
-            return ""
-
-        count = 0
-        out: List[str] = []
-        for ch in (text or "").strip():
-            if self._is_effective_char(ch):
-                if count >= max_effective_chars:
-                    break
-                count += 1
-            out.append(ch)
-        return "".join(out).strip()
-
-    def _is_effective_char(self, ch: str) -> bool:
-        return bool(re.match(r"[\u4e00-\u9fffA-Za-z0-9]", ch))
 
     def _avoid_repeat(self, user_state: Dict[str, Any], reply_text: str) -> str:
         normalized = self._normalize_for_dedupe(reply_text)

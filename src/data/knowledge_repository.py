@@ -17,33 +17,86 @@ from PySide6.QtCore import QObject, Signal
 class KnowledgeItem:
     """知识库条目"""
 
-    def __init__(self, question: str = "", answer: str = "", item_id: str = None,
-                 intent: str = "", tags: Optional[List[str]] = None):
+    def __init__(
+        self,
+        question: str = "",
+        answer: str = "",
+        answers: Optional[List[str]] = None,
+        item_id: str = None,
+        intent: str = "",
+        tags: Optional[List[str]] = None,
+    ):
         self.id = item_id or str(uuid.uuid4())
         self.question = question.strip() if question else ""
-        self.answer = answer.strip() if answer else ""
+        merged_answers: List[str] = []
+        if answer:
+            merged_answers.append(str(answer).strip())
+        if isinstance(answers, list):
+            merged_answers.extend([str(x).strip() for x in answers])
+        self.answers = self._prepare_answers(merged_answers)
         self.intent = intent.strip() if intent else ""
         self.tags = [t.strip() for t in (tags or []) if t.strip()]
         self.created_at = datetime.now().isoformat()
         self.updated_at = datetime.now().isoformat()
 
+    @staticmethod
+    def _prepare_answers(raw_answers: List[str]) -> List[str]:
+        cleaned: List[str] = []
+        seen: set[str] = set()
+        for raw in raw_answers or []:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            key = re.sub(r"\s+", "", text)
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(text)
+            if len(cleaned) >= 5:
+                break
+        return cleaned
+
+    @property
+    def answer(self) -> str:
+        return self.answers[0] if self.answers else ""
+
+    @answer.setter
+    def answer(self, value: str) -> None:
+        text = str(value or "").strip()
+        if not text:
+            self.answers = []
+            return
+        if self.answers:
+            self.answers[0] = text
+            self.answers = self._prepare_answers(self.answers)
+            return
+        self.answers = [text]
+
+    def set_answers(self, answers: Optional[List[str]]) -> None:
+        self.answers = self._prepare_answers([str(x).strip() for x in (answers or [])])
+
     def to_dict(self) -> dict:
-        # 阶段2：持久化仅保留4个业务字段
+        # 持久化业务字段
         return {
             "intent": self.intent,
             "question": self.question,
             "answer": self.answer,
+            "answers": self.answers,
             "tags": self.tags
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "KnowledgeItem":
-        item = cls()
+        answers = data.get("answers", [])
+        answer = str(data.get("answer", "") or "")
+        item = cls(
+            question=str(data.get("question", "") or ""),
+            answer=answer,
+            answers=answers if isinstance(answers, list) else None,
+            intent=str(data.get("intent") or data.get("category", "") or ""),
+            tags=data.get("tags", []) or [],
+        )
         item.id = data.get("id", str(uuid.uuid4()))
-        item.question = data.get("question", "")
-        item.answer = data.get("answer", "")
-        item.intent = data.get("intent") or data.get("category", "")
-        item.tags = data.get("tags", []) or []
         item.created_at = data.get("created_at", datetime.now().isoformat())
         item.updated_at = data.get("updated_at", datetime.now().isoformat())
         return item
@@ -104,25 +157,47 @@ class KnowledgeRepository(QObject):
                 return item
         return None
 
-    def add(self, question: str, answer: str, intent: str = "", tags: Optional[List[str]] = None,
-            category: Optional[str] = None) -> KnowledgeItem:
+    def add(
+        self,
+        question: str,
+        answer: str = "",
+        intent: str = "",
+        tags: Optional[List[str]] = None,
+        category: Optional[str] = None,
+        answers: Optional[List[str]] = None,
+    ) -> KnowledgeItem:
         """添加新条目"""
         resolved_intent = (intent or category or "").strip()
+        effective_answers = [str(x).strip() for x in (answers or []) if str(x).strip()]
+        primary_answer = str(answer or (effective_answers[0] if effective_answers else "")).strip()
         if not tags:
-            resolved_intent, auto_tags = self._infer_intent_and_tags(question, answer)
+            resolved_intent, auto_tags = self._infer_intent_and_tags(question, primary_answer)
             if not resolved_intent:
                 resolved_intent = intent or category or "general"
             tags = auto_tags
-        item = KnowledgeItem(question=question, answer=answer, intent=resolved_intent, tags=tags)
+        item = KnowledgeItem(
+            question=question,
+            answer=primary_answer,
+            answers=effective_answers,
+            intent=resolved_intent,
+            tags=tags,
+        )
         self._items.append(item)
         self._search_cache.clear()
         self.data_changed.emit()
         self.save()
         return item
 
-    def update(self, item_id: str, question: str = None, answer: str = None,
-               intent: str = None, tags: Optional[List[str]] = None,
-               category: Optional[str] = None) -> bool:
+    def update(
+        self,
+        item_id: str,
+        question: str = None,
+        answer: str = None,
+        intent: str = None,
+        tags: Optional[List[str]] = None,
+        category: Optional[str] = None,
+        answers: Optional[List[str]] = None,
+    ) -> bool:
         """更新条目"""
         item = self.get_by_id(item_id)
         if not item:
@@ -130,7 +205,12 @@ class KnowledgeRepository(QObject):
 
         if question is not None:
             item.question = question.strip()
-        if answer is not None:
+        if answers is not None:
+            normalized_answers = [str(x).strip() for x in answers if str(x).strip()]
+            item.set_answers(normalized_answers)
+            if answer is not None and answer.strip():
+                item.answer = answer.strip()
+        elif answer is not None:
             item.answer = answer.strip()
         resolved_intent = intent if intent is not None else category
         if resolved_intent is not None:
@@ -172,7 +252,8 @@ class KnowledgeRepository(QObject):
             # 计算匹配分数
             score = 0
             question_lower = item.question.lower()
-            answer_lower = item.answer.lower()
+            answer_text = " ".join(item.answers if item.answers else ([item.answer] if item.answer else []))
+            answer_lower = answer_text.lower()
 
             for keyword in keywords:
                 if keyword in question_lower:
@@ -196,6 +277,7 @@ class KnowledgeRepository(QObject):
         detail: Dict[str, object] = {
             "matched": False,
             "answer": "",
+            "answers": [],
             "question": "",
             "score": 0.0,
             "mode": "none",
@@ -261,10 +343,12 @@ class KnowledgeRepository(QObject):
                     best_mode = mode
 
         if best_item and best_score >= threshold:
+            matched_answers = list(best_item.answers or ([best_item.answer] if best_item.answer else []))
             detail.update(
                 {
                     "matched": True,
                     "answer": best_item.answer,
+                    "answers": matched_answers,
                     "question": best_item.question,
                     "score": float(best_score),
                     "mode": best_mode,
@@ -305,10 +389,11 @@ class KnowledgeRepository(QObject):
                         if isinstance(item_data, dict):
                             question = item_data.get('question') or item_data.get('q')
                             answer = item_data.get('answer') or item_data.get('a')
+                            answers = item_data.get("answers") if isinstance(item_data.get("answers"), list) else []
                             intent = item_data.get('intent') or item_data.get('category', '')
                             tags = item_data.get('tags', []) or []
-                            if question and answer:
-                                self.add(question, answer, intent=intent, tags=tags)
+                            if question and (answer or answers):
+                                self.add(question, str(answer or ""), intent=intent, tags=tags, answers=answers)
                                 success += 1
                             else:
                                 failed += 1

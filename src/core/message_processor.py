@@ -260,6 +260,14 @@ class MessageProcessor(QObject):
                 "kb_match_score": float(decision.kb_match_score or 0.0),
                 "kb_match_question": str(decision.kb_match_question or ""),
                 "kb_match_mode": str(decision.kb_match_mode or ""),
+                "kb_item_id": str(decision.kb_item_id or ""),
+                "kb_variant_total": int(decision.kb_variant_total or 0),
+                "kb_variant_selected_index": int(
+                    decision.kb_variant_selected_index
+                    if decision.kb_variant_selected_index is not None
+                    else -1
+                ),
+                "kb_variant_fallback_llm": bool(decision.kb_variant_fallback_llm),
                 "kb_confident": bool(decision.kb_confident),
                 "kb_blocked_by_polite_guard": bool(decision.kb_blocked_by_polite_guard),
                 "kb_polite_guard_reason": str(decision.kb_polite_guard_reason or ""),
@@ -341,6 +349,13 @@ class MessageProcessor(QObject):
                         "is_first_turn_global": bool(decision.is_first_turn_global),
                         "first_turn_media_guard_applied": bool(decision.first_turn_media_guard_applied),
                         "kb_repeat_rewritten": bool(decision.kb_repeat_rewritten),
+                        "kb_variant_total": int(decision.kb_variant_total or 0),
+                        "kb_variant_selected_index": int(
+                            decision.kb_variant_selected_index
+                            if decision.kb_variant_selected_index is not None
+                            else -1
+                        ),
+                        "kb_variant_fallback_llm": bool(decision.kb_variant_fallback_llm),
                     },
                 )
             self._reset_cycle()

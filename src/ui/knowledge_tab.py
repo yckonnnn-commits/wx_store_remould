@@ -60,8 +60,9 @@ class KnowledgeEditDialog(QDialog):
 
         # 答案输入
         self.answer_input = QTextEdit()
-        self.answer_input.setPlaceholderText("输入答案...")
-        self.answer_input.setText(self.item.answer)
+        self.answer_input.setPlaceholderText("一行一个备选答案（最多5条）...")
+        current_answers = self.item.answers if getattr(self.item, "answers", None) else ([self.item.answer] if self.item.answer else [])
+        self.answer_input.setText("\n".join(current_answers))
         layout.addRow("答案:", self.answer_input)
 
         # 按钮
@@ -74,7 +75,8 @@ class KnowledgeEditDialog(QDialog):
 
     def _on_save(self):
         question = self.question_input.toPlainText().strip()
-        answer = self.answer_input.toPlainText().strip()
+        raw_answer_block = self.answer_input.toPlainText().strip()
+        answers = [line.strip() for line in raw_answer_block.splitlines() if line.strip()]
         category = self.category_input.currentText().strip()
         tags_raw = self.tags_input.currentText().strip()
         tags = [t.strip() for t in re.split(r"[，,、;；\\s]+", tags_raw) if t.strip()]
@@ -83,12 +85,25 @@ class KnowledgeEditDialog(QDialog):
             QMessageBox.warning(self, "警告", "问题不能为空")
             return
 
-        if not answer:
+        if not answers:
             QMessageBox.warning(self, "警告", "答案不能为空")
             return
+        if len(answers) > 5:
+            QMessageBox.warning(self, "警告", "备选答案最多 5 条")
+            return
+        if len(answers) < 5:
+            reply = QMessageBox.question(
+                self,
+                "提示",
+                f"当前仅设置了 {len(answers)} 条备选答案，建议补齐到 5 条用于轮换测试。\n是否继续保存？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
         self.item.question = question
-        self.item.answer = answer
+        self.item.set_answers(answers)
         self.item.intent = category
         self.item.tags = tags
         self.accept()
@@ -298,9 +313,17 @@ class KnowledgeTab(QWidget):
             self.table.setItem(i, 2, q_item)
 
             # 答案
-            a_item = QTableWidgetItem(item.answer)
+            answer_preview = item.answer
+            variant_total = len(item.answers or [])
+            if variant_total > 1:
+                answer_preview = f"{item.answer}（备选{variant_total}）"
+            a_item = QTableWidgetItem(answer_preview)
             a_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            a_item.setToolTip(item.answer)
+            if variant_total > 1:
+                tooltip = "\n".join([f"{idx + 1}. {ans}" for idx, ans in enumerate(item.answers)])
+                a_item.setToolTip(tooltip)
+            else:
+                a_item.setToolTip(item.answer)
             self.table.setItem(i, 3, a_item)
 
             # 操作按钮
@@ -347,7 +370,7 @@ class KnowledgeTab(QWidget):
         dialog = KnowledgeEditDialog(parent=self, categories=categories, tags=tags)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             item = dialog.get_item()
-            self.repository.add(item.question, item.answer, intent=item.intent, tags=item.tags)
+            self.repository.add(item.question, item.answer, intent=item.intent, tags=item.tags, answers=item.answers)
             self.data_changed.emit()
 
     def _on_edit(self, item_id: str):
@@ -361,8 +384,14 @@ class KnowledgeTab(QWidget):
         dialog = KnowledgeEditDialog(item, parent=self, categories=categories, tags=tags)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             updated = dialog.get_item()
-            self.repository.update(item_id, updated.question, updated.answer,
-                                   intent=updated.intent, tags=updated.tags)
+            self.repository.update(
+                item_id,
+                updated.question,
+                updated.answer,
+                intent=updated.intent,
+                tags=updated.tags,
+                answers=updated.answers,
+            )
             self.data_changed.emit()
 
     def _collect_meta(self):
