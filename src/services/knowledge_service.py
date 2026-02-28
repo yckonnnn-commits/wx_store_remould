@@ -477,15 +477,21 @@ class KnowledgeService(QObject):
         neg_beijing = bool(re.search(r"(不在|不是|不去).*北京", compact))
         neg_shanghai = bool(re.search(r"(不在|不是|不去).*上海", compact))
 
-        # 明确表示“不在北京和上海”时，直接按非覆盖处理，避免反复追问上海区。
-        if neg_beijing and neg_shanghai:
+        # 明确表示“不在北京/不在上海（含两者）”时，按非覆盖处理，避免落到 unknown。
+        if neg_beijing or neg_shanghai:
+            if neg_beijing and neg_shanghai:
+                detected_region = "非沪京地区"
+            elif neg_shanghai:
+                detected_region = "非上海地区"
+            else:
+                detected_region = "非北京地区"
             return {
                 "city": "unknown",
                 "target_store": "unknown",
                 "reason": "out_of_coverage",
                 "route_type": "non_coverage",
                 "store_address": None,
-                "detected_region": "非沪京地区",
+                "detected_region": detected_region,
             }
         # 北京：任何北京区县都只推荐朝阳
         beijing_markers = (

@@ -271,6 +271,8 @@ class MessageProcessor(QObject):
                 "kb_confident": bool(decision.kb_confident),
                 "kb_blocked_by_polite_guard": bool(decision.kb_blocked_by_polite_guard),
                 "kb_polite_guard_reason": str(decision.kb_polite_guard_reason or ""),
+                "force_contact_image": bool(decision.force_contact_image),
+                "kb_contact_trigger_type": str(decision.kb_contact_trigger_type or ""),
                 "is_first_turn_global": bool(decision.is_first_turn_global),
                 "first_turn_media_guard_applied": bool(decision.first_turn_media_guard_applied),
                 "kb_repeat_rewritten": bool(decision.kb_repeat_rewritten),
@@ -358,6 +360,8 @@ class MessageProcessor(QObject):
                             else -1
                         ),
                         "kb_variant_fallback_llm": bool(decision.kb_variant_fallback_llm),
+                        "force_contact_image": bool(decision.force_contact_image),
+                        "kb_contact_trigger_type": str(decision.kb_contact_trigger_type or ""),
                     },
                 )
             self._reset_cycle()

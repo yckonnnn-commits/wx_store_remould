@@ -66,6 +66,33 @@ SHIPPING_BLOCK_KEYWORDS = (
 SHIPPING_BLOCK_REPLACEMENT = "姐姐我们是到店定制哦"
 DEFAULT_REPLY_EMOJI = "🌹"
 ENTERPRISE_GUARD_DOC_PATH = Path("docs") / "llm_enterprise_knowledge_guard_v1.md"
+CONTACT_IMAGE_MAX_SEND = 3
+CONTACT_TRIGGER_KEYWORDS = (
+    "邮寄",
+    "寄快递",
+    "快递",
+    "可以寄吗",
+    "能寄吗",
+    "寄",
+    "预约",
+    "怎么预约",
+    "如何预约",
+    "需要预约吗",
+    "要预约吗",
+)
+CONTACT_TRIGGER_TAGS = (
+    "邮寄",
+    "快递",
+    "预约",
+)
+CONTACT_TRIGGER_INTENTS = ("appointment",)
+APPOINTMENT_PRIORITY_KEYWORDS = (
+    "预约",
+    "怎么预约",
+    "如何预约",
+    "需要预约",
+    "要预约",
+)
 
 
 DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
@@ -129,6 +156,8 @@ class AgentDecision:
     kb_repeat_rewritten: bool = False
     purchase_both_first_hint_sent: bool = False
     video_trigger_user_count: int = 0
+    force_contact_image: bool = False
+    kb_contact_trigger_type: str = ""
 
 
 class _SafeDict(dict):
@@ -317,8 +346,21 @@ class CustomerServiceAgent:
         text = (latest_user_text or "").strip()
         route = self.knowledge_service.resolve_store_recommendation(text)
         intent = self._detect_intent(text)
+        appointment_kb_decision: Optional[AgentDecision] = None
+        if self._looks_like_appointment_query(text):
+            appointment_kb_decision = self._decide_general_reply(
+                latest_user_text=text,
+                intent=intent,
+                route=route,
+                conversation_history=conversation_history or [],
+                session_state=session_state,
+                user_state=user_state,
+                user_id_hash=user_hash,
+            )
 
-        if self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state):
+        if appointment_kb_decision and appointment_kb_decision.reply_source == "knowledge":
+            decision = appointment_kb_decision
+        elif self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state):
             decision = self._decide_rule_reply(
                 text=text,
                 intent=intent,
@@ -329,7 +371,7 @@ class CustomerServiceAgent:
                 is_first_turn_global=is_first_turn_global,
             )
         else:
-            decision = self._decide_general_reply(
+            decision = appointment_kb_decision or self._decide_general_reply(
                 latest_user_text=text,
                 intent=intent,
                 route=route,
@@ -384,6 +426,7 @@ class CustomerServiceAgent:
             session_state=session_state,
             user_state=user_state,
             is_first_turn_global=is_first_turn_global,
+            force_contact_image=bool(decision.force_contact_image),
         )
         decision.media_items = media_items
         decision.media_skip_reason = media_skip_reason
@@ -877,6 +920,11 @@ class CustomerServiceAgent:
             kb_blocked_by_polite_guard = bool(kb_detail.get("blocked_by_polite_guard", False))
             kb_polite_guard_reason = str(kb_detail.get("polite_guard_reason", "") or "")
             if kb_detail.get("matched"):
+                kb_contact_trigger_type = self._resolve_kb_contact_trigger_type(
+                    latest_user_text=latest_user_text,
+                    kb_detail=kb_detail,
+                )
+                force_contact_image = bool(kb_contact_trigger_type)
                 kb_answer = str(kb_detail.get("answer", "") or "").strip()
                 kb_answers = [
                     str(x).strip()
@@ -897,9 +945,9 @@ class CustomerServiceAgent:
                         intent=intent,
                         route_reason=route_reason,
                         reply_goal="解答",
-                        media_plan="none",
+                        media_plan="contact_image" if force_contact_image else "none",
                         reply_source="knowledge",
-                        rule_id="KB_MATCH",
+                        rule_id="KB_MATCH_CONTACT_IMAGE" if force_contact_image else "KB_MATCH",
                         rule_applied=False,
                         kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
                         kb_match_question=str(kb_detail.get("question", "") or ""),
@@ -911,6 +959,8 @@ class CustomerServiceAgent:
                         kb_confident=True,
                         kb_blocked_by_polite_guard=False,
                         kb_polite_guard_reason="",
+                        force_contact_image=force_contact_image,
+                        kb_contact_trigger_type=kb_contact_trigger_type,
                     )
 
                 if exhausted:
@@ -1111,6 +1161,7 @@ class CustomerServiceAgent:
         session_state: Dict[str, Any],
         user_state: Dict[str, Any],
         is_first_turn_global: bool = False,
+        force_contact_image: bool = False,
     ) -> Tuple[List[Dict[str, Any]], str]:
         items: List[Dict[str, Any]] = []
         skip_reason = ""
@@ -1144,6 +1195,7 @@ class CustomerServiceAgent:
                 reason=reason,
                 route=route,
                 session_state=session_state,
+                force_contact_image=force_contact_image,
             )
             if item:
                 items.append(item)
@@ -1211,6 +1263,7 @@ class CustomerServiceAgent:
         reason: str,
         route: Dict[str, Any],
         session_state: Dict[str, Any],
+        force_contact_image: bool = False,
     ) -> Tuple[Optional[Dict[str, Any]], str]:
         if not self._contact_images:
             return None, "contact_image_missing"
@@ -1218,10 +1271,10 @@ class CustomerServiceAgent:
         whitelist = self._is_media_whitelist_session(session_id)
         if not whitelist:
             sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
-            if sent_count >= 1:
+            if sent_count >= CONTACT_IMAGE_MAX_SEND:
                 return None, "contact_image_already_sent"
 
-        if reason == "out_of_coverage" or intent in ("contact", "purchase"):
+        if force_contact_image or reason == "out_of_coverage" or intent in ("contact", "purchase"):
             return (
                 {
                     "type": "contact_image",
@@ -1234,6 +1287,32 @@ class CustomerServiceAgent:
             )
 
         return None, "contact_image_not_applicable"
+
+    def _resolve_kb_contact_trigger_type(self, latest_user_text: str, kb_detail: Dict[str, Any]) -> str:
+        normalized_text = re.sub(r"\s+", "", (latest_user_text or ""))
+        if any(keyword in normalized_text for keyword in CONTACT_TRIGGER_KEYWORDS):
+            if any(keyword in normalized_text for keyword in APPOINTMENT_PRIORITY_KEYWORDS):
+                return "appointment"
+            return "shipping"
+
+        tags = kb_detail.get("tags", [])
+        if isinstance(tags, list):
+            normalized_tags = {str(tag).strip().lower() for tag in tags if str(tag).strip()}
+            if "预约" in normalized_tags:
+                return "appointment"
+            if any(tag.lower() in normalized_tags for tag in CONTACT_TRIGGER_TAGS):
+                return "shipping"
+
+        kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
+        if kb_intent in CONTACT_TRIGGER_INTENTS:
+            return "appointment"
+        return ""
+
+    def _looks_like_appointment_query(self, text: str) -> bool:
+        normalized_text = re.sub(r"\s+", "", (text or ""))
+        if not normalized_text:
+            return False
+        return any(keyword in normalized_text for keyword in APPOINTMENT_PRIORITY_KEYWORDS)
 
     def _is_contact_image_sent_for_current_geo(self, session_state: Dict[str, Any]) -> bool:
         return int(session_state.get("contact_image_sent_count", 0) or 0) > 0

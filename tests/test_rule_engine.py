@@ -188,8 +188,48 @@ class RuleEngineTestCase(unittest.TestCase):
             non_cov_route = service.resolve_store_recommendation("我在黑龙江")
             self.assertEqual(non_cov_route.get("reason"), "out_of_coverage")
 
+            neg_sh_only = service.resolve_store_recommendation("我不在上海")
+            self.assertEqual(neg_sh_only.get("reason"), "out_of_coverage")
+            self.assertEqual(neg_sh_only.get("route_type"), "non_coverage")
+            self.assertEqual(neg_sh_only.get("detected_region"), "非上海地区")
+
+            neg_bj_only = service.resolve_store_recommendation("我不在北京")
+            self.assertEqual(neg_bj_only.get("reason"), "out_of_coverage")
+            self.assertEqual(neg_bj_only.get("route_type"), "non_coverage")
+            self.assertEqual(neg_bj_only.get("detected_region"), "非北京地区")
+
+            neg_both = service.resolve_store_recommendation("我不在北京和上海")
+            self.assertEqual(neg_both.get("reason"), "out_of_coverage")
+            self.assertEqual(neg_both.get("route_type"), "non_coverage")
+            self.assertEqual(neg_both.get("detected_region"), "非沪京地区")
+
             normal_price_route = service.resolve_store_recommendation("不同价格有什么区别啊？")
             self.assertEqual(normal_price_route.get("reason"), "unknown")
+
+    def test_not_in_shanghai_or_beijing_should_not_fallback_to_llm(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, llm = self._build_agent(temp_dir)
+            user_name = "用户负向城市"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_neg_city",
+                user_id_hash=user_hash,
+                ts="2026-02-27T09:35:00",
+            )
+
+            d1 = agent.decide("chat_not_in_sh", user_name, "不在上海怎么做？", [])
+            self.assertNotEqual(d1.reply_source, "llm")
+            self.assertNotEqual(d1.rule_id, "LLM_GENERAL")
+            self.assertEqual(d1.route_reason, "out_of_coverage")
+
+            d2 = agent.decide("chat_not_in_bj", user_name, "不在北京怎么做？", [])
+            self.assertNotEqual(d2.reply_source, "llm")
+            self.assertNotEqual(d2.rule_id, "LLM_GENERAL")
+            self.assertEqual(d2.route_reason, "out_of_coverage")
+            self.assertEqual(llm.calls, 0)
 
     def test_geo_followup_cycle_two_plus_one(self):
         with tempfile.TemporaryDirectory() as td:
@@ -575,8 +615,34 @@ class RuleEngineTestCase(unittest.TestCase):
             )
 
             d2 = agent.decide(s1, user_name, "我在黑龙江怎么买", [])
-            self.assertEqual(d2.media_plan, "none")
-            self.assertFalse(d2.media_items)
+            self.assertEqual(d2.media_plan, "contact_image")
+            self.assertTrue(d2.media_items)
+            agent.mark_media_sent(s1, user_name, d2.media_items[0], success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=s1,
+                media_type="contact_image",
+                media_path=d2.media_items[0]["path"],
+                ts="2999-01-01T00:00:30",
+                user_id_hash=user_hash,
+            )
+
+            d2b = agent.decide(s1, user_name, "我在黑龙江怎么买", [])
+            self.assertEqual(d2b.media_plan, "contact_image")
+            self.assertTrue(d2b.media_items)
+            agent.mark_media_sent(s1, user_name, d2b.media_items[0], success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=s1,
+                media_type="contact_image",
+                media_path=d2b.media_items[0]["path"],
+                ts="2999-01-01T00:00:45",
+                user_id_hash=user_hash,
+            )
+
+            d2c = agent.decide(s1, user_name, "我在黑龙江怎么买", [])
+            self.assertEqual(d2c.media_plan, "none")
+            self.assertFalse(d2c.media_items)
 
             d3 = agent.decide(white_session, user_name, "我在黑龙江怎么买", [])
             self.assertEqual(d3.media_plan, "contact_image")
@@ -594,6 +660,231 @@ class RuleEngineTestCase(unittest.TestCase):
             d4 = agent.decide(white_session, user_name, "我在黑龙江怎么买", [])
             self.assertEqual(d4.media_plan, "contact_image")
             self.assertTrue(d4.media_items)
+
+    def test_shipping_kb_match_appends_contact_image_with_3x_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "那我怎么购买呢？可以寄吗？可以邮寄吗？快递可以吗？寄快递",
+                "姐姐，我们是假发私人定制的，您可以加我，我远程给您定制😊",
+                intent="purchase",
+                tags=["邮寄"],
+                answers=[
+                    "姐姐，我们是假发私人定制的，您可以加我，我远程给您定制😊",
+                    "姐姐可以寄的，不过需要先定制，您加我我给您详细对接一下😊",
+                ],
+            )
+
+            user_name = "用户邮寄"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_shipping_user",
+                user_id_hash=user_hash,
+                ts="2026-02-27T10:20:00",
+            )
+            session_id = "chat_shipping_kb"
+
+            d1 = agent.decide(session_id, user_name, "不同价格有什么区别，可以邮寄吗", [])
+            self.assertEqual(d1.reply_source, "knowledge")
+            self.assertEqual(d1.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d1.reply_text, "姐姐，我们是假发私人定制的，您可以加我，我远程给您定制😊")
+            self.assertEqual(d1.media_plan, "contact_image")
+            self.assertTrue(d1.media_items)
+            agent.mark_media_sent(session_id, user_name, d1.media_items[0], success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="contact_image",
+                media_path=d1.media_items[0]["path"],
+                ts="2999-01-01T00:10:00",
+                user_id_hash=user_hash,
+            )
+
+            d2 = agent.decide(session_id, user_name, "不同价格有什么区别，可以邮寄吗", [])
+            self.assertEqual(d2.reply_source, "knowledge")
+            self.assertEqual(d2.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d2.media_plan, "contact_image")
+            self.assertTrue(d2.media_items)
+            agent.mark_media_sent(session_id, user_name, d2.media_items[0], success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="contact_image",
+                media_path=d2.media_items[0]["path"],
+                ts="2999-01-01T00:10:30",
+                user_id_hash=user_hash,
+            )
+
+            d3 = agent.decide(session_id, user_name, "不同价格有什么区别，可以邮寄吗", [])
+            self.assertEqual(d3.reply_source, "knowledge")
+            self.assertEqual(d3.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d3.media_plan, "contact_image")
+            self.assertTrue(d3.media_items)
+            agent.mark_media_sent(session_id, user_name, d3.media_items[0], success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="contact_image",
+                media_path=d3.media_items[0]["path"],
+                ts="2999-01-01T00:11:00",
+                user_id_hash=user_hash,
+            )
+
+            d4 = agent.decide(session_id, user_name, "不同价格有什么区别，可以邮寄吗", [])
+            self.assertEqual(d4.reply_source, "knowledge")
+            self.assertEqual(d4.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d4.media_plan, "none")
+            self.assertFalse(d4.media_items)
+            self.assertEqual(d4.media_skip_reason, "contact_image_already_sent")
+
+    def test_shipping_kb_match_first_turn_still_blocked_by_global_media_guard(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "可以邮寄吗",
+                "姐姐，我们是假发私人定制的，您可以加我，我远程给您定制😊",
+                intent="purchase",
+                tags=["邮寄"],
+            )
+
+            d = agent.decide("chat_shipping_first_turn", "用户首轮邮寄", "可以邮寄吗", [])
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d.media_plan, "none")
+            self.assertTrue(d.is_first_turn_global)
+            self.assertTrue(d.first_turn_media_guard_applied)
+            self.assertEqual(d.media_skip_reason, "first_turn_global_no_media")
+            self.assertFalse(d.media_items)
+
+    def test_appointment_kb_priority_over_purchase_rule(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "怎么预约？如何预约？需要预约吗？",
+                "姐姐，我们是预约制的呢，避免您跑空您看看图上红框框加我预约🌷",
+                intent="appointment",
+                tags=["预约"],
+                answers=[
+                    "姐姐我们这边是预约制的～您可以看看红框内容加我预约🌷",
+                ],
+            )
+
+            user_name = "用户预约优先"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_appoint_priority",
+                user_id_hash=user_hash,
+                ts="2026-02-27T10:40:00",
+            )
+
+            d = agent.decide("chat_appoint_priority", user_name, "怎么预约？", [])
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d.media_plan, "contact_image")
+            self.assertTrue(d.media_items)
+
+    def test_appointment_kb_contact_image_limit_3(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "怎么预约？如何预约？需要预约吗？",
+                "姐姐，我们是预约制的呢，避免您跑空您看看图上红框框加我预约🌷",
+                intent="appointment",
+                tags=["预约"],
+                answers=[
+                    "姐姐我们这边是预约制的～您可以看看红框内容加我预约🌷",
+                    "需要预约的姐姐～您什么时间方便？您可以看看红框内容+我😊",
+                ],
+            )
+
+            user_name = "用户预约上限"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_appoint_limit",
+                user_id_hash=user_hash,
+                ts="2026-02-27T10:45:00",
+            )
+            session_id = "chat_appoint_limit"
+
+            for idx, ts in enumerate(("2999-01-01T00:20:00", "2999-01-01T00:20:30", "2999-01-01T00:21:00"), start=1):
+                d = agent.decide(session_id, user_name, "需要预约吗？", [])
+                self.assertEqual(d.reply_source, "knowledge")
+                self.assertEqual(d.rule_id, "KB_MATCH_CONTACT_IMAGE")
+                self.assertEqual(d.media_plan, "contact_image")
+                self.assertTrue(d.media_items)
+                agent.mark_media_sent(session_id, user_name, d.media_items[0], success=True)
+                self._append_media_success_log(
+                    conversations_dir=conversations_dir,
+                    session_id=session_id,
+                    media_type="contact_image",
+                    media_path=d.media_items[0]["path"],
+                    ts=ts,
+                    user_id_hash=user_hash,
+                )
+
+            d4 = agent.decide(session_id, user_name, "需要预约吗？", [])
+            self.assertEqual(d4.reply_source, "knowledge")
+            self.assertEqual(d4.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d4.media_plan, "none")
+            self.assertFalse(d4.media_items)
+            self.assertEqual(d4.media_skip_reason, "contact_image_already_sent")
+
+    def test_appointment_first_turn_global_guard_blocks_media(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "怎么预约？如何预约？需要预约吗？",
+                "姐姐，我们是预约制的呢，避免您跑空您看看图上红框框加我预约🌷",
+                intent="appointment",
+                tags=["预约"],
+            )
+
+            d = agent.decide("chat_appoint_first_turn", "用户预约首轮", "怎么预约？", [])
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d.media_plan, "none")
+            self.assertTrue(d.is_first_turn_global)
+            self.assertTrue(d.first_turn_media_guard_applied)
+            self.assertEqual(d.media_skip_reason, "first_turn_global_no_media")
+            self.assertFalse(d.media_items)
+
+    def test_kb_match_without_shipping_keeps_media_none(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "价格是多少",
+                "姐姐，主要看发质和工艺，价格区间我可以给您详细讲解😊",
+                intent="price",
+                tags=["价格"],
+            )
+
+            user_name = "用户普通KB"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_normal_kb",
+                user_id_hash=user_hash,
+                ts="2026-02-27T10:30:00",
+            )
+
+            d = agent.decide("chat_normal_kb", user_name, "价格是多少", [])
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "KB_MATCH")
+            self.assertEqual(d.media_plan, "none")
+            self.assertFalse(d.media_items)
 
     def test_video_session_once_with_log_driven_state(self):
         with tempfile.TemporaryDirectory() as td:
@@ -674,7 +965,8 @@ class RuleEngineTestCase(unittest.TestCase):
             )
 
             d2 = agent.decide("chat_b", user_name, "我在黑龙江怎么买", [])
-            self.assertEqual(d2.media_plan, "none")
+            self.assertEqual(d2.media_plan, "contact_image")
+            self.assertTrue(d2.media_items)
             self.assertIsNone(agent.mark_reply_sent("chat_a", user_name, "再追问一次"))
 
     def test_video_media_fallback_when_config_name_mismatch(self):
@@ -1016,15 +1308,15 @@ class RuleEngineTestCase(unittest.TestCase):
             )
 
             d1 = agent.decide(session_id, user_name, "怎么预约", [])
-            self.assertEqual(d1.rule_id, "PURCHASE_AFTER_BOTH_FIRST_HINT")
-            self.assertTrue(d1.purchase_both_first_hint_sent)
-            self.assertEqual(d1.media_plan, "none")
-            self.assertIn("画圈圈", d1.reply_text)
+            self.assertEqual(d1.reply_source, "knowledge")
+            self.assertEqual(d1.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d1.media_plan, "contact_image")
+            self.assertFalse(d1.kb_variant_fallback_llm)
 
             d2 = agent.decide(session_id, user_name, "怎么预约", [])
             self.assertEqual(d2.reply_source, "knowledge")
-            self.assertEqual(d2.rule_id, "KB_MATCH")
-            self.assertEqual(d2.media_plan, "none")
+            self.assertEqual(d2.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d2.media_plan, "contact_image")
             self.assertFalse(d2.kb_variant_fallback_llm)
 
     def test_repeat_rewrite_fallback_to_pool(self):
