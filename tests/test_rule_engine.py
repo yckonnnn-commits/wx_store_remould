@@ -414,6 +414,15 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertNotIn("💃", normalized)
             self.assertNotIn("～", normalized)
 
+    def test_llm_normalize_enforces_brevity_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+            normalized = agent._normalize_reply_text(
+                "姐姐我们目前门店在北京朝阳和上海5家店（静安、人广、虹口、五角场、徐汇），外地暂时没有门店；如果您方便来店，我可以帮您安排试戴和购买流程。"
+            )
+            self.assertTrue(normalized.endswith("。🌹"))
+            self.assertLessEqual(len(normalized) - 1, 33)
+
     def test_shipping_terms_hard_blocked(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, llm = self._build_agent(Path(td))
