@@ -1,6 +1,8 @@
 import json
+import re
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from src.core.private_cs_agent import CustomerServiceAgent
@@ -205,64 +207,78 @@ class RuleEngineTestCase(unittest.TestCase):
             d4 = agent.decide(session_id, user_name, "我想买", [])
             self.assertEqual(d4.rule_id, "ADDR_ASK_REGION_R1_RESET")
 
-    def test_address_detail_hook_shanghai_scope(self):
+    def test_address_query_shanghai_asks_district(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, _ = self._build_agent(Path(td))
 
             d = agent.decide("chat_detail_sh", "用户地址1", "你们上海店的地址在哪", [])
-            self.assertEqual(d.rule_id, "ADDR_DETAIL_LIST_HOOK")
+            self.assertEqual(d.rule_id, "ADDR_ASK_DISTRICT_R1")
             self.assertEqual(d.media_plan, "none")
-            self.assertIn("静安门店地址", d.reply_text)
-            self.assertIn("徐汇门店地址", d.reply_text)
+            self.assertNotIn("门店地址：", d.reply_text)
 
-    def test_address_detail_hook_both_scope_cityless(self):
+    def test_address_query_cityless_asks_region(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, _ = self._build_agent(Path(td))
 
             d = agent.decide("chat_detail_both", "用户地址2", "具体地址在哪", [])
-            self.assertEqual(d.rule_id, "ADDR_DETAIL_LIST_HOOK")
+            self.assertEqual(d.rule_id, "ADDR_ASK_REGION_R1")
             self.assertEqual(d.media_plan, "none")
-            self.assertIn("上海店详细地址", d.reply_text)
-            self.assertIn("北京店详细地址", d.reply_text)
+            self.assertNotIn("上海店详细地址", d.reply_text)
+            self.assertNotIn("北京店详细地址", d.reply_text)
 
-    def test_address_detail_hook_second_turn_purchase_triggers_contact_image(self):
-        with tempfile.TemporaryDirectory() as td:
-            temp_dir = Path(td)
-            conversations_dir = temp_dir / "conversations"
-            agent, _, _, _ = self._build_agent(temp_dir)
-            user_name = "用户地址3"
-            user_hash = agent._hash_user(user_name)
-            self._append_assistant_reply_log(
-                conversations_dir=conversations_dir,
-                session_id="seed_user_addr3",
-                user_id_hash=user_hash,
-                ts="2026-02-27T09:35:00",
-            )
-
-            d1 = agent.decide("chat_detail_followup", user_name, "具体地址在哪", [])
-            self.assertEqual(d1.rule_id, "ADDR_DETAIL_LIST_HOOK")
-            self.assertEqual(d1.media_plan, "none")
-
-            d2 = agent.decide("chat_detail_followup", user_name, "怎么预约", [])
-            self.assertEqual(d2.rule_id, "PURCHASE_CONTACT_FROM_KNOWN_GEO")
-            self.assertEqual(d2.media_plan, "contact_image")
-            self.assertTrue(d2.media_items)
-
-    def test_address_detail_hook_does_not_override_out_of_coverage(self):
+    def test_address_query_out_of_coverage_still_rule(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, _ = self._build_agent(Path(td))
 
             d = agent.decide("chat_detail_out", "用户地址4", "黑龙江门店具体地址在哪", [])
             self.assertEqual(d.rule_id, "ADDR_OUT_OF_COVERAGE")
-            self.assertNotEqual(d.rule_id, "ADDR_DETAIL_LIST_HOOK")
 
-    def test_address_detail_hook_does_not_override_known_store_route(self):
+    def test_address_query_known_store_still_recommend(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, _ = self._build_agent(Path(td))
 
             d = agent.decide("chat_detail_known", "用户地址5", "我在门头沟，地址在哪", [])
             self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
-            self.assertNotEqual(d.rule_id, "ADDR_DETAIL_LIST_HOOK")
+
+    def test_not_in_beijing_and_shanghai_routes_out_of_coverage(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            user_name = "用户地址6"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_user_addr6",
+                user_id_hash=user_hash,
+                ts="2026-02-27T09:36:00",
+            )
+
+            d = agent.decide("chat_not_bj_sh", user_name, "我不在北京和上海", [])
+            self.assertEqual(d.rule_id, "ADDR_OUT_OF_COVERAGE")
+            self.assertEqual(d.media_plan, "contact_image")
+            self.assertTrue(d.media_items)
+
+    def test_not_in_beijing_and_shanghai_after_address_query_not_loop(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            user_name = "用户地址7"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_user_addr7",
+                user_id_hash=user_hash,
+                ts="2026-02-27T09:37:00",
+            )
+
+            d1 = agent.decide("chat_addr_loop_break", user_name, "地址在哪", [])
+            self.assertIn(d1.rule_id, ("ADDR_ASK_REGION_R1", "ADDR_ASK_DISTRICT_R1"))
+
+            d2 = agent.decide("chat_addr_loop_break", user_name, "我不在北京和上海", [])
+            self.assertEqual(d2.rule_id, "ADDR_OUT_OF_COVERAGE")
+            self.assertEqual(d2.media_plan, "contact_image")
 
     def test_kb_first_then_llm(self):
         with tempfile.TemporaryDirectory() as td:
@@ -348,11 +364,88 @@ class RuleEngineTestCase(unittest.TestCase):
             )
             llm.reply_text = "姐姐放心，咱们这款佩戴很稳，日常活动基本不会掉发～🌹"
 
-            d = agent.decide("chat_kb_exact", user_name, "会掉吗？", [])
-            self.assertEqual(d.reply_source, "knowledge")
-            self.assertNotEqual(d.reply_text, "非常牢固，我们有客户戴着做过山车都没问题！🎢")
-            self.assertTrue(d.kb_repeat_rewritten)
+            d1 = agent.decide("chat_kb_exact", user_name, "会掉吗？", [])
+            self.assertEqual(d1.reply_source, "knowledge")
+            self.assertEqual(d1.reply_text, "非常牢固，我们有客户戴着做过山车都没问题！🎢")
+            self.assertFalse(d1.kb_repeat_rewritten)
+            self.assertEqual(llm.calls, 0)
+
+            d2 = agent.decide("chat_kb_exact", user_name, "会掉吗？", [])
+            self.assertEqual(d2.reply_source, "knowledge")
+            self.assertNotEqual(d2.reply_text, "非常牢固，我们有客户戴着做过山车都没问题！🎢")
+            self.assertTrue(d2.kb_repeat_rewritten)
             self.assertGreaterEqual(llm.calls, 1)
+
+    def test_llm_normalize_only_single_trailing_emoji(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+            normalized = agent._normalize_reply_text("放心戴🌹蹦迪跳舞都不掉哦～💃🌹")
+            self.assertTrue(normalized.endswith("🌹"))
+            self.assertEqual(normalized.count("🌹"), 1)
+            self.assertNotIn("💃", normalized)
+            self.assertNotIn("～", normalized)
+            self.assertLessEqual(len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", normalized)), 15)
+
+    def test_shipping_terms_hard_blocked(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐我们全国包邮到家呢～📦"
+
+            d = agent.decide("chat_shipping_block", "用户物流", "物流怎么发", [])
+            self.assertEqual(d.reply_source, "llm")
+            self.assertEqual(d.reply_text, "姐姐我们是到店定制哦🌹")
+
+    def test_north_fallback_purchase_recommends_beijing_when_no_contact_sent(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            session_id = "chat_north_beijing"
+            user_name = "北方用户A"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_north_a",
+                user_id_hash=user_hash,
+                ts="2026-02-27T10:00:00",
+            )
+
+            d = agent.decide(session_id, user_name, "我在内蒙古怎么买？", [])
+            self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d.route_reason, "north_fallback_beijing")
+            self.assertEqual(d.media_plan, "address_image")
+            self.assertTrue(d.media_items)
+            self.assertIn("北京朝阳门店", d.reply_text)
+
+    def test_north_fallback_purchase_after_contact_sent_uses_circle_remind(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            session_id = "chat_north_contact_sent"
+            user_name = "北方用户B"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_north_b",
+                user_id_hash=user_hash,
+                ts="2026-02-27T10:00:00",
+            )
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="contact_image",
+                media_path=str(temp_dir / "images" / "contact.jpg"),
+                ts="2026-02-27T10:01:00",
+                user_id_hash=user_hash,
+            )
+
+            d = agent.decide(session_id, user_name, "我在内蒙古怎么买？", [])
+            self.assertEqual(d.rule_id, "PURCHASE_REMOTE_CONTACT_REMIND_ONLY")
+            self.assertEqual(d.route_reason, "north_fallback_beijing")
+            self.assertEqual(d.media_plan, "none")
+            self.assertFalse(d.media_items)
+            self.assertIn("画圈", d.reply_text)
 
     def test_first_turn_purchase_unknown_routes_to_addr_ask_region(self):
         with tempfile.TemporaryDirectory() as td:
@@ -720,7 +813,7 @@ class RuleEngineTestCase(unittest.TestCase):
                 session_id=session_id,
                 media_type="address_image",
                 media_path=d1.media_items[0]["path"],
-                ts="2026-02-27T10:20:00",
+                ts=datetime.now().isoformat(timespec="seconds"),
                 user_id_hash=user_hash,
             )
 
