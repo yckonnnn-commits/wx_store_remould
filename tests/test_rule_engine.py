@@ -331,7 +331,7 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d1.reply_source, "knowledge")
             self.assertEqual(llm.calls, 0)
 
-            d2 = agent.decide("chat_kb", "用户B", "你们售后多久", [])
+            d2 = agent.decide("chat_kb", "用户B", "你们营业到几点", [])
             self.assertEqual(d2.reply_source, "llm")
             self.assertEqual(llm.calls, 1)
 
@@ -615,34 +615,19 @@ class RuleEngineTestCase(unittest.TestCase):
             )
 
             d2 = agent.decide(s1, user_name, "我在黑龙江怎么买", [])
-            self.assertEqual(d2.media_plan, "contact_image")
-            self.assertTrue(d2.media_items)
-            agent.mark_media_sent(s1, user_name, d2.media_items[0], success=True)
-            self._append_media_success_log(
-                conversations_dir=conversations_dir,
-                session_id=s1,
-                media_type="contact_image",
-                media_path=d2.media_items[0]["path"],
-                ts="2999-01-01T00:00:30",
-                user_id_hash=user_hash,
-            )
+            self.assertEqual(d2.media_plan, "none")
+            self.assertFalse(d2.media_items)
+            self.assertEqual(d2.rule_id, "ADDR_OUT_OF_COVERAGE_REMIND_ONLY")
 
             d2b = agent.decide(s1, user_name, "我在黑龙江怎么买", [])
-            self.assertEqual(d2b.media_plan, "contact_image")
-            self.assertTrue(d2b.media_items)
-            agent.mark_media_sent(s1, user_name, d2b.media_items[0], success=True)
-            self._append_media_success_log(
-                conversations_dir=conversations_dir,
-                session_id=s1,
-                media_type="contact_image",
-                media_path=d2b.media_items[0]["path"],
-                ts="2999-01-01T00:00:45",
-                user_id_hash=user_hash,
-            )
+            self.assertEqual(d2b.media_plan, "none")
+            self.assertFalse(d2b.media_items)
+            self.assertEqual(d2b.rule_id, "ADDR_OUT_OF_COVERAGE_REMIND_ONLY")
 
             d2c = agent.decide(s1, user_name, "我在黑龙江怎么买", [])
             self.assertEqual(d2c.media_plan, "none")
             self.assertFalse(d2c.media_items)
+            self.assertEqual(d2c.rule_id, "ADDR_OUT_OF_COVERAGE_REMIND_ONLY")
 
             d3 = agent.decide(white_session, user_name, "我在黑龙江怎么买", [])
             self.assertEqual(d3.media_plan, "contact_image")
@@ -1206,6 +1191,179 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.media_plan, "address_image")
             self.assertTrue(d.media_items)
 
+    def test_llm_prompt_includes_structured_conversation_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, llm = self._build_agent(temp_dir)
+            user_name = "用户上下文"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_context",
+                user_id_hash=user_hash,
+                ts="2026-02-27T11:00:00",
+            )
+
+            history = [
+                {"role": "user", "content": "我在上海，想看看门店"},
+                {"role": "assistant", "content": "好的姐姐，您在上海哪个区呢"},
+                {"role": "user", "content": "我不在上海，先了解下区别"},
+            ]
+            d = agent.decide(
+                session_id="chat_context_prompt",
+                user_name=user_name,
+                latest_user_text="你们和其他家的主要差别是什么？",
+                conversation_history=history,
+            )
+            self.assertEqual(d.reply_source, "llm")
+            self.assertIn("【对话上下文】", llm.prompt)
+            self.assertIn("1. 用户:", llm.prompt)
+            self.assertIn("用户(当前): 你们和其他家的主要差别是什么？", llm.prompt)
+
+    def test_after_sales_out_of_coverage_should_not_send_contact_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            user_name = "用户售后"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_after_sales",
+                user_id_hash=user_hash,
+                ts="2026-02-27T11:10:00",
+            )
+
+            d = agent.decide(
+                session_id="chat_after_sales_remote",
+                user_name=user_name,
+                latest_user_text="我不在上海，售后怎么处理？",
+                conversation_history=[],
+            )
+            self.assertEqual(d.rule_id, "AFTER_SALES_REMOTE_SUPPORT")
+            self.assertEqual(d.media_plan, "none")
+            self.assertFalse(d.media_items)
+
+    def test_after_sales_followup_should_not_fallback_to_generic_kb(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "毛躁怎么办",
+                "可以的姐姐，不影响佩戴🥰",
+                intent="wearing",
+                tags=["佩戴体验"],
+            )
+
+            user_name = "用户售后跟进"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_after_sales_followup",
+                user_id_hash=user_hash,
+                ts="2026-02-27T11:20:00",
+            )
+            session_id = "chat_after_sales_followup"
+
+            d1 = agent.decide(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="我不在上海怎么清洗？我在山东",
+                conversation_history=[],
+            )
+            self.assertEqual(d1.rule_id, "AFTER_SALES_REMOTE_SUPPORT")
+
+            d2 = agent.decide(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="我那个假发现在有点毛躁，佩戴了大概有半个月了",
+                conversation_history=[{"role": "assistant", "content": d1.reply_text}],
+            )
+            self.assertEqual(d2.rule_id, "AFTER_SALES_DETAIL_GUIDE")
+            self.assertNotIn("不影响佩戴", d2.reply_text)
+            self.assertEqual(d2.media_plan, "none")
+
+            d3 = agent.decide(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="我已经告诉你问题了，按这个情况怎么处理",
+                conversation_history=[{"role": "assistant", "content": d2.reply_text}],
+            )
+            self.assertIn(d3.rule_id, ("AFTER_SALES_DETAIL_GUIDE", "AFTER_SALES_FOLLOWUP"))
+            self.assertNotEqual(d3.reply_source, "knowledge")
+            self.assertEqual(d3.media_plan, "none")
+
+    def test_after_sales_session_should_not_trigger_delayed_video(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            user_name = "用户售后视频"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_after_sales_video",
+                user_id_hash=user_hash,
+                ts="2026-02-27T11:30:00",
+            )
+            session_id = "chat_after_sales_video"
+
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="contact_image",
+                media_path=str(temp_dir / "images" / "contact.jpg"),
+                ts="2026-02-27T11:31:00",
+                user_id_hash=user_hash,
+            )
+
+            session_log_file = conversations_dir / f"{session_id}.jsonl"
+            session_log_file.write_text(
+                session_log_file.read_text(encoding="utf-8")
+                + json.dumps(
+                    {
+                        "timestamp": "2026-02-27T11:31:10",
+                        "session_id": session_id,
+                        "user_id_hash": user_hash,
+                        "event_type": "user_message",
+                        "reply_source": "",
+                        "rule_id": "",
+                        "model_name": "",
+                        "payload": {"text": "第一条"},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+                + json.dumps(
+                    {
+                        "timestamp": "2026-02-27T11:31:20",
+                        "session_id": session_id,
+                        "user_id_hash": user_hash,
+                        "event_type": "user_message",
+                        "reply_source": "",
+                        "rule_id": "",
+                        "model_name": "",
+                        "payload": {"text": "第二条"},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            agent.memory_store.update_session_state(
+                session_id,
+                {
+                    "last_question_type": "after_sales",
+                    "after_sales_session_locked": True,
+                },
+                user_hash=user_hash,
+            )
+
+            video_item = agent.mark_reply_sent(session_id, user_name, "售后回复")
+            self.assertIsNone(video_item)
+
     def test_both_images_strong_intent_first_fixed_then_llm(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
@@ -1335,7 +1493,7 @@ class RuleEngineTestCase(unittest.TestCase):
             llm.reply_text = repeated
             llm.reply_queue = [repeated, repeated]  # 触发两次改写仍重复，最终落去重池
 
-            d = agent.decide(session_id, user_name, "售后多久", [])
+            d = agent.decide(session_id, user_name, "你们有活动吗", [])
             self.assertNotEqual(agent._normalize_for_dedupe(d.reply_text), normalized)
             self.assertIn(d.reply_text, agent._dedupe_reply_pool)
 

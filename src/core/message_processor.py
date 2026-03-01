@@ -41,6 +41,7 @@ class MessageProcessor(QObject):
         self._processing_reply = False
 
         self._last_processed_marker = ""
+        self._last_processed_session_fingerprint = ""
         self._pending_send: Optional[Dict[str, Any]] = None
 
         self._poll_timer = QTimer(self)
@@ -579,7 +580,7 @@ class MessageProcessor(QObject):
     def _convert_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         history: List[Dict[str, str]] = []
         source = messages[:-1] if messages and messages[-1].get("is_user", False) else messages
-        for msg in source[-12:]:
+        for msg in source[-20:]:
             text = (msg.get("text") or "").strip()
             if not text:
                 continue

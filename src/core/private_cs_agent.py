@@ -93,6 +93,63 @@ APPOINTMENT_PRIORITY_KEYWORDS = (
     "需要预约",
     "要预约",
 )
+AFTER_SALES_HINT_KEYWORDS = (
+    "售后",
+    "质保",
+    "保修",
+    "维修",
+    "返修",
+    "调整",
+    "保养",
+    "清洗",
+    "退货",
+    "换货",
+    "退换",
+    "不合适",
+    "过敏",
+    "不舒服",
+)
+AFTER_SALES_DETAIL_HINT_KEYWORDS = (
+    "毛躁",
+    "炸毛",
+    "打结",
+    "干枯",
+    "分叉",
+    "掉发",
+    "起毛",
+    "翘",
+    "变形",
+    "护理",
+)
+AFTER_SALES_COLLECT_HINT_KEYWORDS = (
+    "佩戴",
+    "戴了",
+    "多久",
+    "半个月",
+    "一个月",
+    "问题",
+    "情况",
+    "照片",
+    "图片",
+)
+AFTER_SALES_GENERIC_BLOCK_PHRASES = (
+    "不影响佩戴",
+    "可以的",
+    "没问题",
+)
+PRE_SALES_HINT_KEYWORDS = (
+    "怎么买",
+    "购买",
+    "下单",
+    "预约",
+    "到店",
+    "试戴",
+    "价格",
+    "多少钱",
+    "材质",
+    "门店",
+    "地址",
+)
 
 
 DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
@@ -110,6 +167,10 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "purchase_contact_intro": "姐姐可以看看图中画框框的地方，会有专门的老师给您介绍～❤️",
     "purchase_contact_remind_only": "姐姐，请注意一下上面图中的圈圈位置哦，可以详细给您介绍怎么买～💗",
     "purchase_contact_remote_remind_only": "姐姐，您可以往上看看图中画圈的地方，我让老师一对一跟您远程定制❤️",
+    "non_coverage_contact_remind_only": "姐姐，您刚刚那条我看到了～您先看上面图里画圈的位置，我这边继续一对一给您跟进方案💗",
+    "after_sales_remote_support": "姐姐，{region}没有门店也没关系，售后问题我先在这里帮您处理，您把具体情况发我（佩戴时长/问题照片）我马上给您方案🌹",
+    "after_sales_detail_solution": "姐姐收到，您这个情况先这样处理：先用温水轻喷在毛躁处，再用宽齿梳从发尾往上顺梳，最后少量护发精油抚平；先不要高温拉扯。您佩戴{duration}了，麻烦再发我一张发尾近照和整体照，我给您进一步细化方案🌹",
+    "after_sales_detail_collect": "姐姐我在处理您的售后问题，您把佩戴时长、问题部位（发尾/刘海/头顶）和近照发我，我马上给您对应处理步骤🌹",
     "strong_intent_after_both_first": "姐姐，您可以看上面的画圈圈地方，我让老师跟您预约～💗",
     "contact_followup_1": "姐姐您看下我刚发的联系方式图，按图添加后跟我说一声，我马上接着帮您安排😊",
     "contact_followup_2": "姐姐刚刚那张联系方式图您点开就能看到，添加后回我一句，我立刻继续帮您跟进😊",
@@ -344,42 +405,64 @@ class CustomerServiceAgent:
         )
 
         text = (latest_user_text or "").strip()
+        history = conversation_history or []
+        detected_question_type = self._detect_question_type(text=text, conversation_history=history)
+        question_type = self._resolve_effective_question_type(
+            detected_question_type=detected_question_type,
+            text=text,
+            session_state=session_state,
+        )
         route = self.knowledge_service.resolve_store_recommendation(text)
         intent = self._detect_intent(text)
+        kb_probe_detail = self.knowledge_service.find_answer_detail(
+            text,
+            threshold=self.knowledge_threshold,
+        ) if self.use_knowledge_first else {}
+        kb_probe_blocked = bool(kb_probe_detail.get("blocked_by_polite_guard", False))
+        kb_probe_reason = str(kb_probe_detail.get("polite_guard_reason", "") or "")
         appointment_kb_decision: Optional[AgentDecision] = None
         if self._looks_like_appointment_query(text):
             appointment_kb_decision = self._decide_general_reply(
                 latest_user_text=text,
                 intent=intent,
                 route=route,
-                conversation_history=conversation_history or [],
+                conversation_history=history,
                 session_state=session_state,
                 user_state=user_state,
                 user_id_hash=user_hash,
+                question_type=question_type,
             )
 
         if appointment_kb_decision and appointment_kb_decision.reply_source == "knowledge":
             decision = appointment_kb_decision
         elif self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state):
             decision = self._decide_rule_reply(
+                session_id=session_id,
                 text=text,
                 intent=intent,
                 route=route,
                 session_state=session_state,
-                conversation_history=conversation_history or [],
+                conversation_history=history,
                 user_state=user_state,
                 is_first_turn_global=is_first_turn_global,
+                question_type=question_type,
             )
         else:
             decision = appointment_kb_decision or self._decide_general_reply(
                 latest_user_text=text,
                 intent=intent,
                 route=route,
-                conversation_history=conversation_history or [],
+                conversation_history=history,
                 session_state=session_state,
                 user_state=user_state,
                 user_id_hash=user_hash,
+                question_type=question_type,
             )
+
+        if decision.reply_source != "knowledge" and kb_probe_blocked:
+            decision.kb_blocked_by_polite_guard = True
+            if not decision.kb_polite_guard_reason:
+                decision.kb_polite_guard_reason = kb_probe_reason
 
         copy_lock_rule_ids = {
             "PURCHASE_CONTACT_FROM_KNOWN_GEO",
@@ -420,6 +503,7 @@ class CustomerServiceAgent:
             session_id=session_id,
             text=text,
             intent=decision.intent,
+            question_type=question_type,
             route=route,
             route_reason=decision.route_reason,
             media_plan=original_media_plan,
@@ -453,6 +537,8 @@ class CustomerServiceAgent:
                 "last_geo_route_reason": route.get("reason", "unknown") if (target_store != "unknown" or detected_region) else session_state.get("last_geo_route_reason", "unknown"),
                 "last_geo_updated_at": now if (target_store != "unknown" or detected_region) else session_state.get("last_geo_updated_at", ""),
                 "knowledge_reply_count": next_knowledge_reply_count,
+                "last_question_type": question_type,
+                "after_sales_session_locked": bool(question_type == "after_sales"),
             },
             user_hash=user_hash,
         )
@@ -462,6 +548,7 @@ class CustomerServiceAgent:
     def mark_reply_sent(self, session_id: str, user_name: str, reply_text: str) -> Optional[Dict[str, Any]]:
         """文本发送成功后的状态推进；返回需要立即发送的视频媒体（若命中）"""
         user_hash = self._hash_user(user_name or session_id)
+        session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
         user_state = self.memory_store.get_user_state(user_hash)
         normalized = self._normalize_for_dedupe(reply_text)
 
@@ -471,6 +558,11 @@ class CustomerServiceAgent:
         if len(recent_hashes) > 40:
             recent_hashes = recent_hashes[-40:]
         user_state["recent_reply_hashes"] = recent_hashes
+
+        if str(session_state.get("last_question_type", "") or "") == "after_sales":
+            self.memory_store.update_user_state(user_hash, user_state)
+            self.memory_store.save()
+            return None
 
         session_video = self.summarize_session_video_from_log(session_id=session_id)
         if session_video.get("contact_sent") and not session_video.get("video_sent"):
@@ -522,6 +614,10 @@ class CustomerServiceAgent:
             session_state["contact_image_last_sent_at"] = now
             session_state["contact_warmup"] = False
             session_state["last_geo_pending"] = False
+            trigger_signature = str(media_item.get("trigger_signature", "") or "").strip()
+            if trigger_signature:
+                session_state["last_contact_trigger_signature"] = trigger_signature
+                session_state["last_contact_trigger_at"] = now
 
         self.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
         self.memory_store.update_user_state(user_hash, user_state)
@@ -554,6 +650,68 @@ class CustomerServiceAgent:
         if any(k in (text or "") for k in CONTACT_INTENT_KEYWORDS):
             return "contact"
         return "general"
+
+    def _detect_question_type(self, text: str, conversation_history: List[Dict[str, str]]) -> str:
+        normalized_text = re.sub(r"\s+", "", (text or ""))
+        if any(keyword in normalized_text for keyword in AFTER_SALES_HINT_KEYWORDS):
+            return "after_sales"
+        if any(keyword in normalized_text for keyword in PRE_SALES_HINT_KEYWORDS):
+            return "pre_sales"
+
+        recent_context = "".join(
+            re.sub(r"\s+", "", str(msg.get("content", "") or ""))
+            for msg in (conversation_history or [])[-8:]
+            if str(msg.get("role", "")) == "user"
+        )
+        if any(keyword in recent_context for keyword in AFTER_SALES_HINT_KEYWORDS):
+            return "after_sales"
+        return "pre_sales"
+
+    def _resolve_effective_question_type(
+        self,
+        detected_question_type: str,
+        text: str,
+        session_state: Dict[str, Any],
+    ) -> str:
+        if detected_question_type == "after_sales":
+            return "after_sales"
+        if bool(session_state.get("after_sales_session_locked", False)):
+            normalized_text = re.sub(r"\s+", "", (text or ""))
+            if any(keyword in normalized_text for keyword in PRE_SALES_HINT_KEYWORDS):
+                return detected_question_type
+            return "after_sales"
+        return detected_question_type
+
+    def _looks_like_after_sales_detail(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", (text or ""))
+        if not normalized:
+            return False
+        has_detail = any(keyword in normalized for keyword in AFTER_SALES_DETAIL_HINT_KEYWORDS)
+        has_collect = any(keyword in normalized for keyword in AFTER_SALES_COLLECT_HINT_KEYWORDS)
+        return has_detail or has_collect or bool(self._extract_after_sales_duration(text))
+
+    def _extract_after_sales_duration(self, text: str) -> str:
+        value = (text or "").strip()
+        if not value:
+            return ""
+
+        patterns = (
+            r"(半个月)",
+            r"(一个月)",
+            r"(两个月)",
+            r"(三个月)",
+            r"(\d+\s*(?:天|周|个月|月|年))",
+            r"(半\s*(?:年|个月|月))",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, value)
+            if match:
+                return re.sub(r"\s+", "", match.group(1))
+        return ""
+
+    def _build_after_sales_detail_reply(self, text: str) -> str:
+        duration = self._extract_after_sales_duration(text) or "一段时间"
+        return self._render_template("after_sales_detail_solution", duration=duration)
 
     def _should_apply_rule_decision(
         self,
@@ -639,6 +797,7 @@ class CustomerServiceAgent:
 
     def _decide_rule_reply(
         self,
+        session_id: str,
         text: str,
         intent: str,
         route: Dict[str, Any],
@@ -646,12 +805,14 @@ class CustomerServiceAgent:
         conversation_history: List[Dict[str, str]],
         user_state: Dict[str, Any],
         is_first_turn_global: bool = False,
+        question_type: str = "pre_sales",
     ) -> AgentDecision:
         reason = route.get("reason", "unknown")
         target_store = route.get("target_store", "unknown")
         geo_context = self._resolve_geo_context(route, session_state)
         both_images_sent = self._has_both_images_sent(session_state)
         neg_shanghai_hint = self._has_neg_shanghai_hint(text)
+        whitelist = self._is_media_whitelist_session(session_id)
 
         if is_first_turn_global and intent == "purchase" and reason in ("unknown", "need_region"):
             return self._build_geo_followup_decision(session_state=session_state, route_reason="need_region", intent="purchase")
@@ -664,12 +825,11 @@ class CustomerServiceAgent:
             intent == "purchase"
             and neg_shanghai_hint
             and geo_context.get("known")
-            and not (reason == "out_of_coverage" and route.get("detected_region"))
         ):
             session_state["last_geo_pending"] = False
             session_state["geo_followup_round"] = 0
             session_state["geo_choice_offered"] = False
-            if self._is_contact_image_sent_for_current_geo(session_state):
+            if self._is_contact_image_sent_in_session(session_id=session_id):
                 return AgentDecision(
                     reply_text=self._render_template("purchase_contact_remote_remind_only"),
                     intent="purchase",
@@ -698,6 +858,32 @@ class CustomerServiceAgent:
             session_state["last_geo_pending"] = False
             session_state["geo_followup_round"] = 0
             session_state["geo_choice_offered"] = False
+            if question_type == "after_sales":
+                return AgentDecision(
+                    reply_text=self._render_template("after_sales_remote_support", region=region),
+                    intent="general",
+                    route_reason="out_of_coverage_after_sales",
+                    reply_goal="解答",
+                    media_plan="none",
+                    reply_source="rule",
+                    rule_id="AFTER_SALES_REMOTE_SUPPORT",
+                    rule_applied=True,
+                    geo_context_source=geo_context.get("source", ""),
+                )
+
+            if self._is_contact_image_sent_in_session(session_id=session_id) and not whitelist:
+                return AgentDecision(
+                    reply_text=self._render_template("non_coverage_contact_remind_only", region=region),
+                    intent="purchase" if intent == "purchase" else "address",
+                    route_reason="out_of_coverage_repeat",
+                    reply_goal="推进购买意图",
+                    media_plan="none",
+                    reply_source="rule",
+                    rule_id="ADDR_OUT_OF_COVERAGE_REMIND_ONLY",
+                    rule_applied=True,
+                    geo_context_source=geo_context.get("source", ""),
+                )
+
             return AgentDecision(
                 reply_text=self._render_template("non_coverage_contact", region=region),
                 intent="purchase" if intent == "purchase" else "address",
@@ -770,6 +956,7 @@ class CustomerServiceAgent:
                 conversation_history=conversation_history,
                 session_state=session_state,
                 user_state=user_state,
+                question_type=question_type,
             )
             follow_decision.media_plan = "none"
             follow_decision.geo_context_source = geo_context.get("source", "")
@@ -879,11 +1066,35 @@ class CustomerServiceAgent:
         session_state: Dict[str, Any],
         user_state: Dict[str, Any],
         user_id_hash: str = "",
+        question_type: str = "pre_sales",
     ) -> AgentDecision:
         route_reason = route.get("reason", "unknown")
         contact_sent = int(session_state.get("contact_image_sent_count", 0) or 0) >= 1
         kb_blocked_by_polite_guard = False
         kb_polite_guard_reason = ""
+
+        if question_type == "after_sales":
+            if self._looks_like_after_sales_detail(latest_user_text):
+                return AgentDecision(
+                    reply_text=self._build_after_sales_detail_reply(latest_user_text),
+                    intent="general",
+                    route_reason=route_reason if route_reason != "unknown" else "after_sales_detail",
+                    reply_goal="解答",
+                    media_plan="none",
+                    reply_source="rule",
+                    rule_id="AFTER_SALES_DETAIL_GUIDE",
+                    rule_applied=True,
+                )
+            return AgentDecision(
+                reply_text=self._render_template("after_sales_detail_collect"),
+                intent="general",
+                route_reason=route_reason if route_reason != "unknown" else "after_sales_followup",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="AFTER_SALES_FOLLOWUP",
+                rule_applied=True,
+            )
 
         if intent == "contact":
             if contact_sent:
@@ -974,6 +1185,7 @@ class CustomerServiceAgent:
                         intent=intent,
                         route_reason=route_reason,
                         conversation_history=conversation_history,
+                        question_type=question_type,
                         kb_blocked_by_polite_guard=False,
                         kb_polite_guard_reason="",
                         user_message_override=rewrite_prompt,
@@ -993,6 +1205,7 @@ class CustomerServiceAgent:
             intent=intent,
             route_reason=route_reason,
             conversation_history=conversation_history,
+            question_type=question_type,
             kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
             kb_polite_guard_reason=kb_polite_guard_reason,
         )
@@ -1003,6 +1216,7 @@ class CustomerServiceAgent:
         intent: str,
         route_reason: str,
         conversation_history: List[Dict[str, str]],
+        question_type: str = "pre_sales",
         kb_blocked_by_polite_guard: bool = False,
         kb_polite_guard_reason: str = "",
         user_message_override: str = "",
@@ -1016,7 +1230,11 @@ class CustomerServiceAgent:
         kb_variant_fallback_llm: bool = False,
         kb_confident: bool = False,
     ) -> AgentDecision:
-        composed_prompt = self._build_general_llm_prompt(latest_user_text)
+        composed_prompt = self._build_general_llm_prompt(
+            latest_user_text=latest_user_text,
+            conversation_history=conversation_history,
+            question_type=question_type,
+        )
         self.llm_service.set_system_prompt(composed_prompt)
         success, result = self.llm_service.generate_reply_sync(
             user_message=user_message_override or latest_user_text,
@@ -1132,7 +1350,15 @@ class CustomerServiceAgent:
             f"用户刚问：{latest_user_text}\n"
             f"下面这句客服话术和历史重复，请保留核心意思但换一种自然表达：{reply_text}"
         )
-        composed_prompt = self._build_general_llm_prompt(latest_user_text)
+        rewrite_question_type = self._detect_question_type(
+            text=latest_user_text,
+            conversation_history=conversation_history,
+        )
+        composed_prompt = self._build_general_llm_prompt(
+            latest_user_text=latest_user_text,
+            conversation_history=conversation_history,
+            question_type=rewrite_question_type,
+        )
         self.llm_service.set_system_prompt(composed_prompt)
 
         for _ in range(2):
@@ -1155,6 +1381,7 @@ class CustomerServiceAgent:
         session_id: str,
         text: str,
         intent: str,
+        question_type: str,
         route: Dict[str, Any],
         route_reason: str,
         media_plan: str,
@@ -1188,10 +1415,13 @@ class CustomerServiceAgent:
                 skip_reason = reason_hint
 
         if media_plan == "contact_image" and not items:
+            if question_type == "after_sales":
+                return items, "after_sales_no_contact_media"
             item, reason_hint = self._queue_contact_image(
                 session_id=session_id,
                 text=text,
                 intent=intent,
+                question_type=question_type,
                 reason=reason,
                 route=route,
                 session_state=session_state,
@@ -1260,6 +1490,7 @@ class CustomerServiceAgent:
         session_id: str,
         text: str,
         intent: str,
+        question_type: str,
         reason: str,
         route: Dict[str, Any],
         session_state: Dict[str, Any],
@@ -1273,8 +1504,25 @@ class CustomerServiceAgent:
             sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
             if sent_count >= CONTACT_IMAGE_MAX_SEND:
                 return None, "contact_image_already_sent"
+            if reason == "out_of_coverage":
+                trigger_signature = self._build_contact_trigger_signature(
+                    text=text,
+                    reason=reason,
+                    question_type=question_type,
+                )
+                previous_signature = str(session_state.get("last_contact_trigger_signature", "") or "").strip()
+                if sent_count >= 1 and trigger_signature and trigger_signature == previous_signature:
+                    return None, "contact_image_repeat_question_blocked"
+
+        if question_type == "after_sales" and reason == "out_of_coverage" and not force_contact_image:
+            return None, "contact_image_after_sales_blocked"
 
         if force_contact_image or reason == "out_of_coverage" or intent in ("contact", "purchase"):
+            trigger_signature = self._build_contact_trigger_signature(
+                text=text,
+                reason=reason,
+                question_type=question_type,
+            )
             return (
                 {
                     "type": "contact_image",
@@ -1282,6 +1530,7 @@ class CustomerServiceAgent:
                     "detected_region": route.get("detected_region", "") or route_region(reason, text),
                     "route_reason": reason,
                     "target_store": route.get("target_store", ""),
+                    "trigger_signature": trigger_signature,
                 },
                 "",
             )
@@ -1316,6 +1565,10 @@ class CustomerServiceAgent:
 
     def _is_contact_image_sent_for_current_geo(self, session_state: Dict[str, Any]) -> bool:
         return int(session_state.get("contact_image_sent_count", 0) or 0) > 0
+
+    def _is_contact_image_sent_in_session(self, session_id: str) -> bool:
+        session_video = self.summarize_session_video_from_log(session_id=session_id)
+        return bool(session_video.get("contact_sent"))
 
     def _has_both_images_sent(self, session_state: Dict[str, Any]) -> bool:
         return (
@@ -1634,22 +1887,68 @@ class CustomerServiceAgent:
     def _is_media_whitelist_session(self, session_id: str) -> bool:
         return session_id in self._media_whitelist_sessions
 
-    def _build_general_llm_prompt(self, latest_user_text: str) -> str:
+    def _build_general_llm_prompt(
+        self,
+        latest_user_text: str,
+        conversation_history: List[Dict[str, str]],
+        question_type: str,
+    ) -> str:
         kb_examples = self._top_kb_examples(latest_user_text, limit=2)
         kb_block = "\n".join([f"- 问：{q}\n  答：{a}" for q, a in kb_examples]) or "（当前无高相关知识库样例）"
         enterprise_guard = self._enterprise_guard_doc_text or "（企业知识约束文档缺失，请按已有品牌口径稳妥回复）"
+        context_block = self._build_dialogue_context_block(
+            conversation_history=conversation_history,
+            latest_user_text=latest_user_text,
+        )
+        question_type_label = "售后咨询" if question_type == "after_sales" else "售前咨询"
+        stage_rule = (
+            "当前是售后咨询，优先解决问题本身，不要推进购买或发送联系方式导向。"
+            if question_type == "after_sales"
+            else "当前是售前咨询，优先围绕购买决策解答。"
+        )
 
         return (
             "你是艾耐儿私域客服助手。\n"
             "你只负责补充规则外的一般问答，不做任何地址/媒体/流程决策。\n"
             "语气自然、亲切、像真人客服。\n"
+            "必须严格依据完整对话上下文回答，不能只看最后一句。\n"
             "硬规则：结论先行；尽量1句话完成回复，且必须是完整句；末尾只保留1个emoji表情。\n"
             "超出知识库可常规发挥，但必须围绕企业知识口径；禁止编造活动承诺、联系方式或超出事实的信息。\n"
             "若信息不确定，给稳妥结论并引导用户补充。\n\n"
+            f"【问题类型】{question_type_label}\n"
+            f"【阶段约束】{stage_rule}\n\n"
+            f"【对话上下文】\n{context_block}\n\n"
             f"【企业知识约束】\n{enterprise_guard}\n\n"
             f"【知识库参考】\n{kb_block}\n\n"
             "仅输出最终客服话术纯文本，不要输出JSON、代码块或解释。"
         )
+
+    def _build_dialogue_context_block(
+        self,
+        conversation_history: List[Dict[str, str]],
+        latest_user_text: str,
+        max_messages: int = 14,
+    ) -> str:
+        records: List[str] = []
+        source = list(conversation_history or [])
+        if max_messages > 0:
+            source = source[-max_messages:]
+
+        for idx, msg in enumerate(source, start=1):
+            role = str(msg.get("role", "") or "").strip()
+            text = str(msg.get("content", "") or "").strip()
+            if not text:
+                continue
+            speaker = "用户" if role == "user" else "客服"
+            normalized = self._normalize_context_text(text)
+            records.append(f"{idx}. {speaker}: {normalized}")
+
+        current = self._normalize_context_text(latest_user_text)
+        records.append(f"{len(records) + 1}. 用户(当前): {current}")
+        return "\n".join(records) if records else "1. 用户(当前): （无有效文本）"
+
+    def _normalize_context_text(self, text: str) -> str:
+        return re.sub(r"\s+", " ", (text or "").strip())
 
     def _top_kb_examples(self, query: str, limit: int = 3) -> List[Tuple[str, str]]:
         q = self._normalize_for_dedupe(query)
@@ -1700,6 +1999,10 @@ class CustomerServiceAgent:
 
         if not value:
             value = "姐姐我在呢"
+        max_plain_len = 32
+        if len(value) > max_plain_len:
+            value = value[:max_plain_len]
+            value = value.rstrip("，,；;、。！？!? ")
         value = value.rstrip("，,；; ")
         if not re.search(r"[。！？!?]$", value):
             value = f"{value}。"
@@ -1733,6 +2036,10 @@ class CustomerServiceAgent:
         if not value:
             return False
         return any(keyword in value for keyword in NEG_SHANGHAI_HINT_KEYWORDS)
+
+    def _build_contact_trigger_signature(self, text: str, reason: str, question_type: str) -> str:
+        normalized_text = self._normalize_for_dedupe(text)
+        return f"{reason}|{question_type}|{normalized_text[:32]}"
 
     def _hash_user(self, text: str) -> str:
         return hashlib.md5((text or "unknown").encode("utf-8", errors="ignore")).hexdigest()[:10]

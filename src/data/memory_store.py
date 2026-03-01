@@ -72,6 +72,8 @@ class MemoryStore:
             "address_image_last_sent_at_by_store": {},
             "contact_image_sent_count": 0,
             "contact_image_last_sent_at": "",
+            "last_contact_trigger_signature": "",
+            "last_contact_trigger_at": "",
             "contact_warmup": False,
             "geo_followup_round": 0,
             "geo_choice_offered": False,
@@ -88,6 +90,8 @@ class MemoryStore:
             "last_route_reason": "unknown",
             "last_intent": "general",
             "last_reply_goal": "解答",
+            "last_question_type": "pre_sales",
+            "after_sales_session_locked": False,
         }
 
     def _default_user_state(self, user_hash: str) -> Dict[str, Any]:
@@ -200,6 +204,8 @@ class MemoryStore:
         state.setdefault("address_image_last_sent_at_by_store", {})
         state.setdefault("contact_image_sent_count", 0)
         state.setdefault("contact_image_last_sent_at", "")
+        state.setdefault("last_contact_trigger_signature", "")
+        state.setdefault("last_contact_trigger_at", "")
         state.setdefault("contact_warmup", False)
         state.setdefault("geo_followup_round", 0)
         state.setdefault("geo_choice_offered", False)
@@ -216,6 +222,8 @@ class MemoryStore:
         state.setdefault("last_route_reason", "unknown")
         state.setdefault("last_intent", "general")
         state.setdefault("last_reply_goal", "解答")
+        state.setdefault("last_question_type", "pre_sales")
+        state.setdefault("after_sales_session_locked", False)
         if not isinstance(state.get("sent_address_stores"), list):
             state["sent_address_stores"] = []
         if not isinstance(state.get("address_image_last_sent_at_by_store"), dict):
